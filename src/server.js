@@ -1,6 +1,5 @@
 const fs = require('fs');
 const path = require('path');
-const { randomUUID } = require('crypto');
 const cors = require('cors');
 const express = require('express');
 const multer = require('multer');
@@ -16,6 +15,7 @@ const {
   updateJob,
   getJobs,
   getJobById,
+  deleteJobById,
 } = require('./db');
 const { buildJobSummaryBody, sendJobSummaryEmail } = require('./email');
 
@@ -46,6 +46,14 @@ Inputs you may use (any can be missing):
 Return only the JSON object.`;
 
 initDb();
+
+function generateJobId() {
+  const now = Date.now().toString();
+  const randomSuffix = Math.floor(Math.random() * 1000)
+    .toString()
+    .padStart(3, '0');
+  return `${now}${randomSuffix}`;
+}
 
 function mapRowToJob(row) {
   return {
@@ -352,7 +360,7 @@ app.post('/process-file', upload.single('file'), (req, res) => {
 
   logger.info({ filename: file.originalname }, 'Received file upload');
 
-  const jobId = randomUUID();
+  const jobId = generateJobId();
   let storedFilename = file.filename;
 
   if (!storedFilename) {
@@ -423,6 +431,41 @@ app.get('/jobs/:id', (req, res) => {
   const job = mapRowToJob(row);
 
   return res.json(job);
+});
+
+app.delete('/jobs/:id', async (req, res) => {
+  const { id } = req.params;
+  const parsedId = Number.parseInt(id, 10);
+
+  if (Number.isNaN(parsedId)) {
+    return res.status(400).json({ error: 'Invalid job id' });
+  }
+
+  const lookupId = String(parsedId);
+  const job = getJobById(lookupId);
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  if (job.filename) {
+    const filePath = path.join(UPLOAD_DIR, job.filename);
+    try {
+      await fs.promises.unlink(filePath);
+    } catch (err) {
+      if (!err || err.code !== 'ENOENT') {
+        logger.warn({ err, jobId: lookupId, filePath }, 'Failed to delete job audio file');
+      }
+    }
+  }
+
+  try {
+    deleteJobById(lookupId);
+  } catch (err) {
+    logger.error({ err, jobId: lookupId }, 'Failed to delete job record');
+    return res.status(500).json({ error: 'Failed to delete job' });
+  }
+
+  return res.json({ success: true });
 });
 
 // ---------------- Existing /webhooks/teams logic (unchanged) ----------------

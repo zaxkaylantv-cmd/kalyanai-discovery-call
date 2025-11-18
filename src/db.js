@@ -172,10 +172,22 @@ function getJobById(id) {
   return stmt.get(id);
 }
 
+/**
+ * Delete a job record by id
+ */
+function deleteJobById(id) {
+  const stmt = db.prepare(`
+      DELETE FROM jobs
+      WHERE id = ?
+    `);
+  return stmt.run(id);
+}
+
 module.exports = {
   initDb,
   createJob,
   updateJob,
   getJobs,
   getJobById,
+  deleteJobById,
 };
