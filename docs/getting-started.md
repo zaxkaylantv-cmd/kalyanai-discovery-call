@@ -38,6 +38,12 @@ This guide gets you running safely in minutes.
 3. Set `SLACK_WEBHOOK_URL=<your real webhook>`
 4. Restart server and POST a real `transcript_url`
 
+## Dropbox → Whisper → GPT → Google Docs workflow
+- Configure Dropbox + OpenAI + Google vars in `.env` (`DROPBOX_*`, `OPENAI_API_KEY`, `WHISPER_MODEL`, `SUMMARY_MODEL`, `GOOGLE_SERVICE_ACCOUNT_JSON`, `GOOGLE_DOCS_FOLDER_ID`).
+- Implement the Dropbox webhook handler to enqueue jobs into `src/workflows/dropboxWhisper.js`.
+- The workflow will download the audio, call Whisper for transcripts, summarize/pull pain points via ChatGPT, and publish a formatted Google Doc.
+- See `src/workflows/dropboxWhisper.js` and `src/prompts/summarizeCall.js` for the orchestration + prompt template scaffolding.
+
 ## Notes
 - Logs are written to `logs/ingest.jsonl` (git-ignored)
 - Env vars in `.env` override local env for convenience
