@@ -175,12 +175,13 @@ function getJobById(id) {
 /**
  * Delete a job record by id
  */
-function deleteJobById(id) {
+async function deleteJobById(id) {
   const stmt = db.prepare(`
       DELETE FROM jobs
       WHERE id = ?
     `);
-  return stmt.run(id);
+
+  stmt.run(id);
 }
 
 module.exports = {

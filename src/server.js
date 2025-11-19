@@ -334,18 +334,20 @@ const upload = multer({ dest: UPLOAD_DIR });
 app.use(express.json());
 app.use(pinoHttp({ logger }));
 
+const corsOptions = {
+  origin: [
+    'http://185.151.29.141:8080', // VPS frontend
+    'http://localhost:5173',
+    'http://localhost:3000',
+    'http://localhost:8080',
+  ],
+  methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization'],
+};
+
 // CORS – allow VPS frontend and local dev frontends
-app.use(
-  cors({
-    origin: [
-      'http://185.151.29.141:8080', // VPS frontend
-      'http://localhost:5173',
-      'http://localhost:3000',
-      'http://localhost:8080',
-    ],
-    methods: ['GET', 'POST'],
-  }),
-);
+app.use(cors(corsOptions));
+app.options('*', cors(corsOptions));
 
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
@@ -435,14 +437,12 @@ app.get('/jobs/:id', (req, res) => {
 
 app.delete('/jobs/:id', async (req, res) => {
   const { id } = req.params;
-  const parsedId = Number.parseInt(id, 10);
 
-  if (Number.isNaN(parsedId)) {
+  if (!id) {
     return res.status(400).json({ error: 'Invalid job id' });
   }
 
-  const lookupId = String(parsedId);
-  const job = getJobById(lookupId);
+  const job = getJobById(id);
   if (!job) {
     return res.status(404).json({ error: 'Job not found' });
   }
@@ -453,15 +453,15 @@ app.delete('/jobs/:id', async (req, res) => {
       await fs.promises.unlink(filePath);
     } catch (err) {
       if (!err || err.code !== 'ENOENT') {
-        logger.warn({ err, jobId: lookupId, filePath }, 'Failed to delete job audio file');
+        logger.warn({ err, jobId: id, filePath }, 'Failed to delete job audio file');
       }
     }
   }
 
   try {
-    deleteJobById(lookupId);
+    await deleteJobById(id);
   } catch (err) {
-    logger.error({ err, jobId: lookupId }, 'Failed to delete job record');
+    logger.error({ err, jobId: id }, 'Failed to delete job record');
     return res.status(500).json({ error: 'Failed to delete job' });
   }
 
