@@ -18,6 +18,7 @@ const {
   deleteJobById,
 } = require('./db');
 const { buildJobSummaryBody, sendJobSummaryEmail } = require('./email');
+const { generatePrecallPrep } = require('./workflows/precallPrepWorkflow');
 
 const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) {
@@ -466,6 +467,60 @@ app.delete('/jobs/:id', async (req, res) => {
   }
 
   return res.json({ success: true });
+});
+
+// ---------------- Pre-call prep route ----------------
+
+app.post('/precall-prep', async (req, res) => {
+  const {
+    clientName,
+    companyName,
+    role,
+    websiteUrl,
+    linkedinUrl,
+    notes,
+    meetingGoal,
+    goalDescription,
+    offerName,
+    offerSummary,
+    desiredOutcome,
+  } = req.body || {};
+
+  const requiredFields = [clientName, companyName, meetingGoal];
+  const missingRequired = requiredFields.some(
+    (value) => typeof value !== 'string' || value.trim() === '',
+  );
+
+  if (missingRequired) {
+    return res
+      .status(400)
+      .json({ error: 'clientName, companyName and meetingGoal are required.' });
+  }
+
+  const planInput = {
+    clientName,
+    companyName,
+    role,
+    websiteUrl,
+    linkedinUrl,
+    notes,
+    meetingGoal,
+    goalDescription,
+    offerName,
+    offerSummary,
+    desiredOutcome,
+  };
+
+  try {
+    const plan = await generatePrecallPrep(planInput);
+    return res.json(plan);
+  } catch (err) {
+    console.error('Failed to generate pre-call prep plan', err);
+    logger.error({ err }, 'Failed to generate pre-call prep plan');
+    return res
+      .status(500)
+      .json({ error: 'Failed to generate pre-call prep plan.' });
+  }
 });
 
 // ---------------- Existing /webhooks/teams logic (unchanged) ----------------
