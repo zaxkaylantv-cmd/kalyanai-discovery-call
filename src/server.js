@@ -819,22 +819,17 @@ app.post('/postcall-coaching', async (req, res) => {
           : transcriptText
         : 'Transcript unavailable.';
 
-    let analysisContext = 'Analysis JSON unavailable.';
-    if (analysisObject) {
-      const stringified = JSON.stringify(analysisObject, null, 2);
-      analysisContext =
+    const callAnalysis = analysisObject || null;
+    let callAnalysisForPrompt = 'callAnalysis: null';
+    if (callAnalysis) {
+      const stringified = JSON.stringify({ callAnalysis }, null, 2);
+      callAnalysisForPrompt =
         stringified.length > MAX_ANALYSIS_CHARS
-          ? `${stringified.slice(0, MAX_ANALYSIS_CHARS)}\n...[analysis truncated]`
+          ? `${stringified.slice(0, MAX_ANALYSIS_CHARS)}\n...[callAnalysis truncated]`
           : stringified;
-    } else if (job.analysisJson && typeof job.analysisJson === 'string') {
-      const raw = job.analysisJson;
-      analysisContext =
-        raw.length > MAX_ANALYSIS_CHARS
-          ? `${raw.slice(0, MAX_ANALYSIS_CHARS)}\n...[analysis truncated]`
-          : raw;
     }
 
-    let precallPlanContext = null;
+    let precallSnapshot = null;
     if (precallPlanId && typeof precallPlanId === 'string' && precallPlanId.trim()) {
       try {
         const plan = getPrecallPlanById(precallPlanId);
@@ -861,17 +856,20 @@ app.post('/postcall-coaching', async (req, res) => {
             logger.warn({ err, precallPlanId }, 'Failed to parse coachingJson for postcall coaching');
           }
 
-          precallPlanContext = {
-            id: plan.id,
-            clientName: plan.clientName,
-            companyName: plan.companyName,
-            meetingGoal: plan.meetingGoal,
-            offerName: plan.offerName,
-            desiredOutcome: plan.desiredOutcome,
-            briefing,
-            checklist,
-            coachingNotes,
-          };
+            const questionChecklist =
+              Array.isArray(checklist) && checklist.length > 0 ? checklist : [];
+
+            precallSnapshot = {
+              clientName: plan.clientName || null,
+              companyName: plan.companyName || null,
+              meetingGoal: plan.meetingGoal || null,
+              desiredOutcome: plan.desiredOutcome || null,
+              offerName: plan.offerName || null,
+              notes: plan.notes || null,
+              briefing: briefing || null,
+              coachingNotes: coachingNotes || null,
+              questionChecklist,
+            };
         }
       } catch (err) {
         logger.warn({ err, precallPlanId }, 'Failed to load precall plan for postcall coaching');
@@ -904,8 +902,9 @@ app.post('/postcall-coaching', async (req, res) => {
       '- Put all behavioural feedback about Zax into strengths, improvementAreas, coachingTips, and missedQuestions.',
       '- Put all client follow-up items into followUpsForClient, primaryNextAction, and nextActionSteps.',
       '- Do NOT repeat long call summaries or restate the transcript; keep each item concise and action-focused.',
-      '- Use missedQuestions from the latest checklist coverage to populate the missedQuestions field in the PostCallCoaching JSON.',
-      '- Use askedQuestions from the latest checklist coverage to inform strengths, improvementAreas, and coachingTips.',
+      '- Use precallSnapshot.meetingGoal and precallSnapshot.desiredOutcome to judge whether the rep moved towards their stated goal for this call.',
+      '- Use checklistCoverage.askedQuestions vs checklistCoverage.missedQuestions to identify strengths and gaps in discovery.',
+      '- Use callAnalysis and the transcript to ground all feedback in what actually happened on the call.',
       '',
       'Call/job metadata:',
       `Job ID: ${jobId}`,
@@ -915,22 +914,17 @@ app.post('/postcall-coaching', async (req, res) => {
       'Call transcript (may be truncated):',
       trimmedTranscript,
       '',
-      'Analysis JSON from the initial discovery analysis (stringified, may include call summary, top priorities, pain points, timeline, red flags):',
-      analysisContext,
+      'Call analysis object (callAnalysis, parsed from analysisJson; may be truncated when stringified):',
+      callAnalysisForPrompt,
     ];
 
-    if (precallPlanContext) {
+    if (precallSnapshot) {
       userMessageParts.push(
         '',
-        'Pre-call plan context:',
+        'Pre-call snapshot (precallSnapshot: what was planned before the call):',
         JSON.stringify(
           {
-            meetingGoal: precallPlanContext.meetingGoal,
-            desiredOutcome: precallPlanContext.desiredOutcome,
-            offerName: precallPlanContext.offerName,
-            briefing: precallPlanContext.briefing,
-            checklist: precallPlanContext.checklist,
-            coachingNotes: precallPlanContext.coachingNotes,
+            precallSnapshot,
           },
           null,
           2
@@ -939,19 +933,19 @@ app.post('/postcall-coaching', async (req, res) => {
     }
 
     if (checklistContext) {
-      const askedIds = checklistContext.askedQuestions
-        .map((q) => (q && typeof q.id === 'string' ? q.id : null))
-        .filter((id) => id);
-      const missedIds = checklistContext.missedQuestions
-        .map((q) => (q && typeof q.id === 'string' ? q.id : null))
-        .filter((id) => id);
-
       userMessageParts.push(
         '',
-        'Planned checklist questions and coverage:',
-        `askedQuestions: ${askedIds.length ? askedIds.join(', ') : '(none)'}`,
-        `missedQuestions: ${missedIds.length ? missedIds.join(', ') : '(none)'}`,
-        'Use the missedQuestions list above to ensure the missedQuestions field is populated, and reference askedQuestions when describing strengths, improvementAreas, and coachingTips.'
+        'Checklist coverage (checklistCoverage with askedQuestions and missedQuestions):',
+        JSON.stringify(
+          {
+            checklistCoverage: {
+              askedQuestions: checklistContext.askedQuestions,
+              missedQuestions: checklistContext.missedQuestions,
+            },
+          },
+          null,
+          2
+        )
       );
     }
 
