@@ -58,9 +58,12 @@ Briefing fields:
 
 Question checklist and coaching:
 - questionChecklist must include a mix of core discovery/process/risk questions (source="core") and goal-specific questions tied directly to meetingGoal, goalDescription, offerName, offerSummary, and desiredOutcome (source="goal-specific").
-- All questions must be tightly aligned with the meetingGoal, goalDescription, offerName, offerSummary, and desiredOutcome. Do not include off-topic questions.
-- Provide at least 4 total questions.
-- Set importance to "must-ask" for critical questions and "nice-to-have" for optional depth probes.
+- Produce a questionChecklist array with 10 concise, practical questions whenever the inputs and website context provide enough information. Aim for exactly 10 questions if possible; if there is enough information, never return fewer than 8 questions.
+- Ensure coverage across: goal-specific questions, core discovery questions (covering current process, pain, decision-making, budget/timing), and optional or nice-to-have questions that deepen understanding.
+- All questions must be concise, practical to ask verbatim in a real meeting, and tightly aligned with the meetingGoal, goalDescription, offerName, offerSummary, and desiredOutcome. Do not include off-topic questions.
+- Do not include duplicate or near-duplicate questions; each question should add distinct value. Do not repeat or slightly rephrase the same question.
+- All questions must be directly useful to ask in a real meeting and framed so they can be used as-is without editing.
+- Set importance to "must-ask" for critical questions and "nice-to-have" for optional depth probes. Respect and use the existing category, importance, and source fields exactly as defined in the schema.
 - coachingNotes must contain 3-6 short, practical, high-leverage tips, each a single concise sentence that helps the user run a stronger sales conversation towards the desiredOutcome. No fluff, no generic advice.
 
 Metadata:

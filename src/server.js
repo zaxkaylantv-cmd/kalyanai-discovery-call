@@ -513,6 +513,11 @@ app.post('/precall-prep', async (req, res) => {
 
   try {
     const plan = await generatePrecallPrep(planInput);
+    const checklist =
+      (plan && Array.isArray(plan.questionChecklist) && plan.questionChecklist) ||
+      (plan && Array.isArray(plan.checklist) && plan.checklist) ||
+      [];
+    console.log('Precall checklist length:', checklist.length);
     return res.json(plan);
   } catch (err) {
     console.error('Failed to generate pre-call prep plan', err);
