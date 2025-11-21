@@ -18,6 +18,8 @@ const {
   deletePrecallPlanById,
   savePostcallCoaching,
   getLatestPostcallCoachingByJobId,
+  saveCallChecklist,
+  getLatestCallChecklistByJobId,
   updateJob,
   getJobs,
   getJobById,
@@ -790,6 +792,16 @@ app.post('/postcall-coaching', async (req, res) => {
       }
     }
 
+    const latestChecklist = getLatestCallChecklistByJobId(jobId);
+    const checklistCoverage = latestChecklist?.coverage ?? null;
+    const checklistContext =
+      checklistCoverage && Array.isArray(checklistCoverage)
+        ? {
+            askedQuestions: checklistCoverage.filter((q) => q && q.asked),
+            missedQuestions: checklistCoverage.filter((q) => q && !q.asked),
+          }
+        : null;
+
     const recentCoaching = getLatestPostcallCoachingByJobId(jobId);
     const trimmedExtraNotes =
       typeof extraNotes === 'string' && extraNotes.trim().length > 0
@@ -806,6 +818,8 @@ app.post('/postcall-coaching', async (req, res) => {
       '- Put all behavioural feedback about Zax into strengths, improvementAreas, coachingTips, and missedQuestions.',
       '- Put all client follow-up items into followUpsForClient, primaryNextAction, and nextActionSteps.',
       '- Do NOT repeat long call summaries or restate the transcript; keep each item concise and action-focused.',
+      '- Use missedQuestions from the latest checklist coverage to populate the missedQuestions field in the PostCallCoaching JSON.',
+      '- Use askedQuestions from the latest checklist coverage to inform strengths, improvementAreas, and coachingTips.',
       '',
       'Call/job metadata:',
       `Job ID: ${jobId}`,
@@ -835,6 +849,23 @@ app.post('/postcall-coaching', async (req, res) => {
           null,
           2
         )
+      );
+    }
+
+    if (checklistContext) {
+      const askedIds = checklistContext.askedQuestions
+        .map((q) => (q && typeof q.id === 'string' ? q.id : null))
+        .filter((id) => id);
+      const missedIds = checklistContext.missedQuestions
+        .map((q) => (q && typeof q.id === 'string' ? q.id : null))
+        .filter((id) => id);
+
+      userMessageParts.push(
+        '',
+        'Planned checklist questions and coverage:',
+        `askedQuestions: ${askedIds.length ? askedIds.join(', ') : '(none)'}`,
+        `missedQuestions: ${missedIds.length ? missedIds.join(', ') : '(none)'}`,
+        'Use the missedQuestions list above to ensure the missedQuestions field is populated, and reference askedQuestions when describing strengths, improvementAreas, and coachingTips.'
       );
     }
 
@@ -915,6 +946,58 @@ app.post('/postcall-coaching', async (req, res) => {
     console.error('Error in /postcall-coaching', error);
     logger.error({ err: error }, 'Error in /postcall-coaching');
     return res.status(500).json({ error: 'Failed to generate post-call coaching' });
+  }
+});
+
+app.post('/calls/:jobId/checklist-coverage', (req, res) => {
+  try {
+    const { jobId } = req.params;
+    const { precallPlanId, questions } = req.body || {};
+
+    if (!jobId) {
+      return res.status(400).json({ error: 'jobId is required' });
+    }
+
+    if (!Array.isArray(questions)) {
+      return res.status(400).json({ error: 'questions must be an array' });
+    }
+
+    const coverageJson = questions
+      .filter((q) => q && typeof q.id === 'string')
+      .map((q) => ({
+        id: q.id,
+        asked: Boolean(q.asked),
+      }));
+
+    const id = generateJobId();
+    const createdAt = new Date().toISOString();
+
+    saveCallChecklist({
+      id,
+      jobId,
+      precallPlanId: precallPlanId || null,
+      createdAt,
+      coverageJson,
+    });
+
+    const latest = getLatestCallChecklistByJobId(jobId);
+
+    if (latest) {
+      return res.json(latest);
+    }
+
+    return res.json({
+      id,
+      jobId,
+      precallPlanId: precallPlanId || null,
+      createdAt,
+      coverage: coverageJson,
+    });
+  } catch (error) {
+    console.error('Error in /calls/:jobId/checklist-coverage', error);
+    return res
+      .status(500)
+      .json({ error: 'Failed to save checklist coverage' });
   }
 });
 

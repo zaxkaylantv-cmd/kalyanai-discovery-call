@@ -92,6 +92,16 @@ function createSqliteDb(Database) {
           error TEXT
         )
       `).run();
+
+    db.prepare(`
+        CREATE TABLE IF NOT EXISTS call_checklists (
+          id TEXT PRIMARY KEY,
+          jobId TEXT NOT NULL,
+          precallPlanId TEXT,
+          createdAt TEXT NOT NULL,
+          coverageJson TEXT NOT NULL
+        )
+      `).run();
   }
 
   /**
@@ -313,6 +323,61 @@ function createSqliteDb(Database) {
     };
   }
 
+  function saveCallChecklist({
+    id,
+    jobId,
+    precallPlanId,
+    createdAt,
+    coverageJson,
+  }) {
+    const stmt = db.prepare(`
+        INSERT INTO call_checklists (
+          id,
+          jobId,
+          precallPlanId,
+          createdAt,
+          coverageJson
+        ) VALUES (?, ?, ?, ?, ?)
+      `);
+
+    stmt.run(
+      id,
+      jobId,
+      precallPlanId ?? null,
+      createdAt,
+      JSON.stringify(coverageJson)
+    );
+  }
+
+  function getLatestCallChecklistByJobId(jobId) {
+    const row = db.prepare(`
+        SELECT *
+        FROM call_checklists
+        WHERE jobId = ?
+        ORDER BY datetime(createdAt) DESC
+        LIMIT 1
+      `).get(jobId);
+
+    if (!row) {
+      return null;
+    }
+
+    let coverage;
+    try {
+      coverage = JSON.parse(row.coverageJson);
+    } catch {
+      coverage = null;
+    }
+
+    return {
+      id: row.id,
+      jobId: row.jobId,
+      precallPlanId: row.precallPlanId,
+      createdAt: row.createdAt,
+      coverage,
+    };
+  }
+
   /**
    * Update an existing job by id
    * fields is an object like { status, resultSummary, analysisJson, error }
@@ -406,6 +471,8 @@ function createSqliteDb(Database) {
     deletePrecallPlanById,
     savePostcallCoaching,
     getLatestPostcallCoachingByJobId,
+    saveCallChecklist,
+    getLatestCallChecklistByJobId,
     updateJob,
     getJobs,
     getJobById,
@@ -417,6 +484,7 @@ function createInMemoryDb() {
   const jobs = [];
   const jobsById = new Map();
   const postcallCoachingRecords = [];
+  const callChecklists = [];
 
   function initDb() {
     // Nothing to do for in-memory setup
@@ -567,6 +635,66 @@ function createInMemoryDb() {
     };
   }
 
+  function saveCallChecklist({
+    id,
+    jobId,
+    precallPlanId,
+    createdAt,
+    coverageJson,
+  }) {
+    const record = {
+      id,
+      jobId,
+      precallPlanId: precallPlanId || null,
+      createdAt,
+      coverageJson: JSON.stringify(coverageJson),
+    };
+
+    const existingIndex = callChecklists.findIndex((entry) => entry.id === id);
+    if (existingIndex >= 0) {
+      callChecklists[existingIndex] = record;
+    } else {
+      callChecklists.push(record);
+    }
+  }
+
+  function getLatestCallChecklistByJobId(jobId) {
+    let latest = null;
+
+    for (const entry of callChecklists) {
+      if (entry.jobId !== jobId) {
+        continue;
+      }
+
+      if (
+        !latest ||
+        new Date(entry.createdAt).getTime() >
+          new Date(latest.createdAt).getTime()
+      ) {
+        latest = entry;
+      }
+    }
+
+    if (!latest) {
+      return null;
+    }
+
+    let coverage;
+    try {
+      coverage = JSON.parse(latest.coverageJson);
+    } catch {
+      coverage = null;
+    }
+
+    return {
+      id: latest.id,
+      jobId: latest.jobId,
+      precallPlanId: latest.precallPlanId,
+      createdAt: latest.createdAt,
+      coverage,
+    };
+  }
+
   function updateJob(id, fields) {
     if (!id) {
       throw new Error("updateJob: id is required");
@@ -639,6 +767,8 @@ function createInMemoryDb() {
     deletePrecallPlanById,
     savePostcallCoaching,
     getLatestPostcallCoachingByJobId,
+    saveCallChecklist,
+    getLatestCallChecklistByJobId,
     updateJob,
     getJobs,
     getJobById,
