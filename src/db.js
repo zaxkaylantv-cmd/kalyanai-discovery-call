@@ -224,6 +224,15 @@ function createSqliteDb(Database) {
     return stmt.get(id);
   }
 
+  function deletePrecallPlanById(id) {
+    const stmt = db.prepare(`
+        DELETE FROM precall_plans
+        WHERE id = ?
+      `);
+
+    return stmt.run(id);
+  }
+
   /**
    * Update an existing job by id
    * fields is an object like { status, resultSummary, analysisJson, error }
@@ -314,6 +323,7 @@ function createSqliteDb(Database) {
     createPrecallPlan,
     getRecentPrecallPlans,
     getPrecallPlanById,
+    deletePrecallPlanById,
     updateJob,
     getJobs,
     getJobById,
@@ -399,6 +409,10 @@ function createInMemoryDb() {
     return record ? { ...record } : null;
   }
 
+  function deletePrecallPlanById(id) {
+    jobsById.delete(`precall:${id}`);
+  }
+
   function updateJob(id, fields) {
     if (!id) {
       throw new Error("updateJob: id is required");
@@ -468,6 +482,7 @@ function createInMemoryDb() {
     createPrecallPlan,
     getRecentPrecallPlans,
     getPrecallPlanById,
+    deletePrecallPlanById,
     updateJob,
     getJobs,
     getJobById,

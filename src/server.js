@@ -15,6 +15,7 @@ const {
   createPrecallPlan,
   getRecentPrecallPlans,
   getPrecallPlanById,
+  deletePrecallPlanById,
   updateJob,
   getJobs,
   getJobById,
@@ -344,6 +345,7 @@ const corsOptions = {
     'http://localhost:5173',
     'http://localhost:3000',
     'http://localhost:8080',
+    'http://192.168.4.113:8080',
   ],
   methods: ['GET', 'POST', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
@@ -513,7 +515,7 @@ app.get('/precall-plans/:id', (req, res) => {
       logger.error({ e, id }, 'Failed to parse precall plan JSON');
     }
 
-    return res.json({
+      return res.json({
       id: plan.id,
       createdAt: plan.createdAt,
       clientName: plan.clientName,
@@ -524,13 +526,35 @@ app.get('/precall-plans/:id', (req, res) => {
       briefing,
       checklist,
       coaching,
-    });
+      });
+    } catch (err) {
+      console.error('Failed to fetch precall plan', err);
+      logger.error({ err, id }, 'Failed to fetch precall plan');
+      return res
+        .status(500)
+        .json({ error: 'Failed to fetch precall plan.' });
+    }
+  });
+
+app.delete('/precall-plans/:id', (req, res) => {
+  try {
+    const { id } = req.params || {};
+    if (!id) {
+      return res.status(400).json({ error: 'Invalid precall plan id' });
+    }
+
+    const result = deletePrecallPlanById(id);
+    if (!result || result.changes === 0) {
+      return res.status(404).json({ error: 'Precall plan not found' });
+    }
+
+    return res.json({ ok: true });
   } catch (err) {
-    console.error('Failed to fetch precall plan', err);
-    logger.error({ err, id }, 'Failed to fetch precall plan');
+    console.error('Failed to delete precall plan', err);
+    logger.error({ err }, 'Failed to delete precall plan');
     return res
       .status(500)
-      .json({ error: 'Failed to fetch precall plan.' });
+      .json({ error: 'Failed to delete precall plan.' });
   }
 });
 
