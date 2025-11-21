@@ -257,8 +257,57 @@ async function sendJobSummaryEmail(job) {
   }
 }
 
+async function sendPrecallPlanEmail(options = {}) {
+  if (!FROM_EMAIL) {
+    console.warn(
+      "sendPrecallPlanEmail: FROM_EMAIL not configured; skipping email.",
+    );
+    return false;
+  }
+
+  if (!transporter) {
+    console.warn(
+      "sendPrecallPlanEmail: transporter not configured correctly; skipping email.",
+    );
+    return false;
+  }
+
+  const recipient =
+    typeof options.to === "string" ? options.to.trim() : "";
+
+  if (!recipient) {
+    console.warn(
+      "sendPrecallPlanEmail: no recipient email provided; skipping email.",
+    );
+    return false;
+  }
+
+  const subject =
+    typeof options.subject === "string" && options.subject.trim()
+      ? options.subject.trim()
+      : "Your pre-call plan is ready";
+
+  const body =
+    typeof options.body === "string" && options.body.trim()
+      ? options.body.trim()
+      : "Your pre-call plan is ready.";
+
+  try {
+    await transporter.sendMail({
+      from: FROM_EMAIL,
+      to: recipient,
+      subject,
+      text: body,
+    });
+    return true;
+  } catch (err) {
+    console.error("sendPrecallPlanEmail: failed to send email", err);
+    return false;
+  }
+}
+
 module.exports = {
   buildJobSummaryBody,
   sendJobSummaryEmail,
+  sendPrecallPlanEmail,
 };
-

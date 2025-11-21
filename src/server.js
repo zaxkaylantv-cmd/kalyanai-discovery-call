@@ -27,7 +27,11 @@ const {
   getJobById,
   deleteJobById,
 } = require('./db');
-const { buildJobSummaryBody, sendJobSummaryEmail } = require('./email');
+const {
+  buildJobSummaryBody,
+  sendJobSummaryEmail,
+  sendPrecallPlanEmail,
+} = require('./email');
 const { generatePrecallPrep } = require('./workflows/precallPrepWorkflow');
 
 const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
@@ -386,6 +390,7 @@ app.get('/settings', (req, res) => {
         updatedAt: null,
         autoPrecallEmail: true,
         autoPostcallCoachingEmail: false,
+        theme: 'dark',
       };
     return res.json(settings);
   } catch (error) {
@@ -394,19 +399,20 @@ app.get('/settings', (req, res) => {
   }
 });
 
-app.post('/settings', (req, res) => {
+app.post("/settings", (req, res) => {
   try {
-    const { autoPrecallEmail, autoPostcallCoachingEmail } = req.body || {};
+    const { autoPrecallEmail, autoPostcallCoachingEmail, theme } = req.body || {};
 
     const updated = upsertUserSettings({
       autoPrecallEmail: Boolean(autoPrecallEmail),
       autoPostcallCoachingEmail: Boolean(autoPostcallCoachingEmail),
+      theme: theme === "light" ? "light" : "dark",
     });
 
     return res.json(updated);
   } catch (error) {
-    console.error('Error in POST /settings', error);
-    return res.status(500).json({ error: 'Failed to save settings' });
+    console.error("Error in POST /settings", error);
+    return res.status(500).json({ error: "Failed to save settings" });
   }
 });
 
@@ -624,6 +630,7 @@ app.post('/precall-prep', async (req, res) => {
     offerName,
     offerSummary,
     desiredOutcome,
+    sendToEmail,
   } = req.body || {};
 
   const requiredFields = [clientName, companyName, meetingGoal];
@@ -650,6 +657,9 @@ app.post('/precall-prep', async (req, res) => {
     offerSummary,
     desiredOutcome,
   };
+
+  const trimmedSendToEmail =
+    typeof sendToEmail === 'string' ? sendToEmail.trim() : '';
 
   try {
     const plan = await generatePrecallPrep(planInput);
@@ -685,7 +695,48 @@ app.post('/precall-prep', async (req, res) => {
       logger.error({ dbErr }, 'Failed to persist precall plan to database');
     }
 
-    return res.json({ ...plan, precallPlanId });
+    let autoPrecallEmail = true;
+    try {
+      const userSettings = getUserSettings();
+      autoPrecallEmail =
+        userSettings && typeof userSettings.autoPrecallEmail === 'boolean'
+          ? userSettings.autoPrecallEmail
+          : true;
+    } catch (settingsErr) {
+      logger.warn(
+        { settingsErr },
+        'Failed to load user settings for pre-call email; defaulting to enabled',
+      );
+    }
+
+    let emailStatus = 'skipped';
+    if (autoPrecallEmail) {
+      if (trimmedSendToEmail) {
+        try {
+          const emailSent = await sendPrecallPlanEmail({
+            to: trimmedSendToEmail,
+            subject: plan && plan.emailSubject,
+            body: plan && plan.emailBody,
+          });
+          emailStatus = emailSent ? 'sent' : 'error';
+          if (!emailSent) {
+            logger.warn(
+              { sendToEmail: trimmedSendToEmail },
+              'Pre-call plan email send returned false',
+            );
+          }
+        } catch (emailErr) {
+          emailStatus = 'error';
+          logger.error({ emailErr }, 'Failed to send pre-call plan email');
+        }
+      } else {
+        emailStatus = 'skipped';
+      }
+    } else {
+      emailStatus = 'skipped';
+    }
+
+    return res.json({ ...plan, precallPlanId, emailStatus });
   } catch (err) {
     console.error('Failed to generate pre-call prep plan', err);
     logger.error({ err }, 'Failed to generate pre-call prep plan');

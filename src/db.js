@@ -109,7 +109,8 @@ function createSqliteDb(Database) {
           createdAt TEXT NOT NULL,
           updatedAt TEXT NOT NULL,
           autoPrecallEmail INTEGER NOT NULL DEFAULT 1,
-          autoPostcallCoachingEmail INTEGER NOT NULL DEFAULT 0
+          autoPostcallCoachingEmail INTEGER NOT NULL DEFAULT 0,
+          theme TEXT NOT NULL DEFAULT 'dark'
         )
       `).run();
   }
@@ -401,6 +402,7 @@ function createSqliteDb(Database) {
       updatedAt: row.updatedAt,
       autoPrecallEmail: row.autoPrecallEmail === 1,
       autoPostcallCoachingEmail: row.autoPostcallCoachingEmail === 1,
+      theme: row.theme || "dark",
     };
   }
 
@@ -410,6 +412,7 @@ function createSqliteDb(Database) {
 
     const autoPrecallEmail = settings.autoPrecallEmail ? 1 : 0;
     const autoPostcallCoachingEmail = settings.autoPostcallCoachingEmail ? 1 : 0;
+    const theme = settings.theme || "dark";
 
     if (!existing) {
       const id =
@@ -418,17 +421,17 @@ function createSqliteDb(Database) {
           ? crypto.randomUUID()
           : String(Date.now()));
       db.prepare(
-        `INSERT INTO user_settings (id, createdAt, updatedAt, autoPrecallEmail, autoPostcallCoachingEmail)
-         VALUES (?, ?, ?, ?, ?)`
-      ).run(id, now, now, autoPrecallEmail, autoPostcallCoachingEmail);
+        `INSERT INTO user_settings (id, createdAt, updatedAt, autoPrecallEmail, autoPostcallCoachingEmail, theme)
+         VALUES (?, ?, ?, ?, ?, ?)`
+      ).run(id, now, now, autoPrecallEmail, autoPostcallCoachingEmail, theme);
       return getUserSettings();
     }
 
     db.prepare(
       `UPDATE user_settings
-       SET updatedAt = ?, autoPrecallEmail = ?, autoPostcallCoachingEmail = ?
+       SET updatedAt = ?, autoPrecallEmail = ?, autoPostcallCoachingEmail = ?, theme = ?
        WHERE id = ?`
-    ).run(now, autoPrecallEmail, autoPostcallCoachingEmail, existing.id);
+    ).run(now, autoPrecallEmail, autoPostcallCoachingEmail, theme, existing.id);
 
     return getUserSettings();
   }
@@ -764,6 +767,7 @@ function createInMemoryDb() {
       updatedAt: userSettings.updatedAt,
       autoPrecallEmail: userSettings.autoPrecallEmail === 1,
       autoPostcallCoachingEmail: userSettings.autoPostcallCoachingEmail === 1,
+      theme: userSettings.theme || "dark",
     };
   }
 
@@ -771,6 +775,7 @@ function createInMemoryDb() {
     const now = new Date().toISOString();
     const autoPrecallEmail = settings.autoPrecallEmail ? 1 : 0;
     const autoPostcallCoachingEmail = settings.autoPostcallCoachingEmail ? 1 : 0;
+    const theme = settings.theme || "dark";
 
     if (!userSettings) {
       const id =
@@ -784,6 +789,7 @@ function createInMemoryDb() {
         updatedAt: now,
         autoPrecallEmail,
         autoPostcallCoachingEmail,
+        theme,
       };
       return getUserSettings();
     }
@@ -793,6 +799,7 @@ function createInMemoryDb() {
       updatedAt: now,
       autoPrecallEmail,
       autoPostcallCoachingEmail,
+      theme,
     };
 
     return getUserSettings();
