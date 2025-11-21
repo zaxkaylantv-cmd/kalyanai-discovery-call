@@ -16,6 +16,8 @@ const {
   getRecentPrecallPlans,
   getPrecallPlanById,
   deletePrecallPlanById,
+  savePostcallCoaching,
+  getLatestPostcallCoachingByJobId,
   updateJob,
   getJobs,
   getJobById,
@@ -49,6 +51,18 @@ Inputs you may use (any can be missing):
 - plus optional structured metadata in future like: client, industry, project_goal, audience, constraints, current_stack, systems_in_use, data_sources, authentication, nonfunctional_requirements.
 
 Return only the JSON object.`;
+
+const POSTCALL_COACHING_MODEL =
+  process.env.POSTCALL_COACHING_MODEL || 'gpt-4.1-mini';
+const POSTCALL_COACHING_SYSTEM_PROMPT = `You are a post-call sales coach for Kalyan AI.
+
+Your job is to coach the salesperson (Zax), not to summarise the client’s business.
+
+You must ONLY reply with a strict JSON object in the PostCallCoaching shape (goalSummary, goalAchieved, goalComment, strengths, improvementAreas, missedQuestions, coachingTips, followUpsForClient, primaryNextAction, nextActionSteps, riskLevel, opportunitySize).
+
+Do not repeat long call summaries or restate the transcript; keep each item concise and action-focused.`;
+const MAX_TRANSCRIPT_CHARS = 15000;
+const MAX_ANALYSIS_CHARS = 12000;
 
 initDb();
 
@@ -641,6 +655,266 @@ app.post('/precall-prep', async (req, res) => {
     return res
       .status(500)
       .json({ error: 'Failed to generate pre-call prep plan.' });
+  }
+});
+
+app.post('/postcall-coaching', async (req, res) => {
+  try {
+    const { jobId, precallPlanId, extraNotes } = req.body || {};
+
+    if (!jobId || typeof jobId !== 'string' || jobId.trim() === '') {
+      return res.status(400).json({ error: 'jobId is required' });
+    }
+
+    if (!openai) {
+      return res
+        .status(500)
+        .json({ error: 'OpenAI client is not configured. Set OPENAI_API_KEY.' });
+    }
+
+    const jobRow = getJobById(jobId);
+    if (!jobRow) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const job = mapRowToJob(jobRow);
+
+    let analysisObject = null;
+    if (job.analysisJson && typeof job.analysisJson === 'string') {
+      try {
+        analysisObject = JSON.parse(job.analysisJson);
+      } catch (err) {
+        logger.warn({ err, jobId }, 'Failed to parse analysis JSON for postcall coaching');
+      }
+    } else if (job.analysisJson && typeof job.analysisJson === 'object') {
+      analysisObject = job.analysisJson;
+    }
+
+    let transcriptText = null;
+    if (typeof jobRow.transcript === 'string' && jobRow.transcript.trim()) {
+      transcriptText = jobRow.transcript.trim();
+    }
+
+    if (!transcriptText && analysisObject) {
+      const candidates = [
+        analysisObject.transcript,
+        analysisObject.transcribed_text,
+        analysisObject.fullTranscript,
+        analysisObject.transcriptText,
+      ];
+      for (const candidate of candidates) {
+        if (typeof candidate === 'string' && candidate.trim()) {
+          transcriptText = candidate.trim();
+          break;
+        }
+      }
+    }
+
+    if (!transcriptText) {
+      const transcriptPath = path.join(UPLOAD_DIR, `${jobId}.transcript.txt`);
+      if (fs.existsSync(transcriptPath)) {
+        try {
+          transcriptText = fs.readFileSync(transcriptPath, 'utf8');
+        } catch (err) {
+          logger.warn(
+            { err, jobId, transcriptPath },
+            'Failed to read transcript file for postcall coaching'
+          );
+        }
+      }
+    }
+
+    const trimmedTranscript =
+      transcriptText && transcriptText.length > 0
+        ? transcriptText.length > MAX_TRANSCRIPT_CHARS
+          ? `${transcriptText.slice(0, MAX_TRANSCRIPT_CHARS)}\n...[transcript truncated]`
+          : transcriptText
+        : 'Transcript unavailable.';
+
+    let analysisContext = 'Analysis JSON unavailable.';
+    if (analysisObject) {
+      const stringified = JSON.stringify(analysisObject, null, 2);
+      analysisContext =
+        stringified.length > MAX_ANALYSIS_CHARS
+          ? `${stringified.slice(0, MAX_ANALYSIS_CHARS)}\n...[analysis truncated]`
+          : stringified;
+    } else if (job.analysisJson && typeof job.analysisJson === 'string') {
+      const raw = job.analysisJson;
+      analysisContext =
+        raw.length > MAX_ANALYSIS_CHARS
+          ? `${raw.slice(0, MAX_ANALYSIS_CHARS)}\n...[analysis truncated]`
+          : raw;
+    }
+
+    let precallPlanContext = null;
+    if (precallPlanId && typeof precallPlanId === 'string' && precallPlanId.trim()) {
+      try {
+        const plan = getPrecallPlanById(precallPlanId);
+        if (plan) {
+          let briefing = null;
+          let checklist = null;
+          let coachingNotes = null;
+
+          try {
+            briefing = plan.briefingJson ? JSON.parse(plan.briefingJson) : null;
+          } catch (err) {
+            logger.warn({ err, precallPlanId }, 'Failed to parse briefingJson for postcall coaching');
+          }
+
+          try {
+            checklist = plan.checklistJson ? JSON.parse(plan.checklistJson) : null;
+          } catch (err) {
+            logger.warn({ err, precallPlanId }, 'Failed to parse checklistJson for postcall coaching');
+          }
+
+          try {
+            coachingNotes = plan.coachingJson ? JSON.parse(plan.coachingJson) : null;
+          } catch (err) {
+            logger.warn({ err, precallPlanId }, 'Failed to parse coachingJson for postcall coaching');
+          }
+
+          precallPlanContext = {
+            id: plan.id,
+            clientName: plan.clientName,
+            companyName: plan.companyName,
+            meetingGoal: plan.meetingGoal,
+            offerName: plan.offerName,
+            desiredOutcome: plan.desiredOutcome,
+            briefing,
+            checklist,
+            coachingNotes,
+          };
+        }
+      } catch (err) {
+        logger.warn({ err, precallPlanId }, 'Failed to load precall plan for postcall coaching');
+      }
+    }
+
+    const recentCoaching = getLatestPostcallCoachingByJobId(jobId);
+    const trimmedExtraNotes =
+      typeof extraNotes === 'string' && extraNotes.trim().length > 0
+        ? extraNotes.trim()
+        : null;
+
+    const userMessageParts = [
+      'This is a completed sales discovery call between Zax (the salesperson) and a prospective client.',
+      'Act strictly as a post-call sales coach: do not summarise the client’s business; focus on coaching Zax.',
+      '',
+      'Your tasks:',
+      '- Evaluate how effectively Zax moved toward the stated meeting goal for this discovery call.',
+      '- Fill every field in the PostCallCoaching JSON object: goalSummary, goalAchieved, goalComment, strengths, improvementAreas, missedQuestions, coachingTips, followUpsForClient, primaryNextAction, nextActionSteps, riskLevel, opportunitySize.',
+      '- Put all behavioural feedback about Zax into strengths, improvementAreas, coachingTips, and missedQuestions.',
+      '- Put all client follow-up items into followUpsForClient, primaryNextAction, and nextActionSteps.',
+      '- Do NOT repeat long call summaries or restate the transcript; keep each item concise and action-focused.',
+      '',
+      'Call/job metadata:',
+      `Job ID: ${jobId}`,
+      `Job status: ${job.status}`,
+      `Job result summary: ${job.resultSummary || 'Unknown'}`,
+      '',
+      'Call transcript (may be truncated):',
+      trimmedTranscript,
+      '',
+      'Analysis JSON from the initial discovery analysis (stringified, may include call summary, top priorities, pain points, timeline, red flags):',
+      analysisContext,
+    ];
+
+    if (precallPlanContext) {
+      userMessageParts.push(
+        '',
+        'Pre-call plan context:',
+        JSON.stringify(
+          {
+            meetingGoal: precallPlanContext.meetingGoal,
+            desiredOutcome: precallPlanContext.desiredOutcome,
+            offerName: precallPlanContext.offerName,
+            briefing: precallPlanContext.briefing,
+            checklist: precallPlanContext.checklist,
+            coachingNotes: precallPlanContext.coachingNotes,
+          },
+          null,
+          2
+        )
+      );
+    }
+
+    if (trimmedExtraNotes) {
+      userMessageParts.push('', 'Extra notes from the user:', trimmedExtraNotes);
+    }
+
+    if (recentCoaching && recentCoaching.coaching) {
+      userMessageParts.push(
+        '',
+        'Most recent coaching output for reference:',
+        JSON.stringify(recentCoaching.coaching, null, 2)
+      );
+    }
+
+    const completion = await openai.chat.completions.create({
+      model: POSTCALL_COACHING_MODEL,
+      response_format: { type: 'json_object' },
+      temperature: 0.2,
+      messages: [
+        { role: 'system', content: POSTCALL_COACHING_SYSTEM_PROMPT },
+        { role: 'user', content: userMessageParts.join('\n') },
+      ],
+    });
+
+    const rawContent =
+      completion &&
+      Array.isArray(completion.choices) &&
+      completion.choices[0] &&
+      completion.choices[0].message &&
+      typeof completion.choices[0].message.content === 'string'
+        ? completion.choices[0].message.content.trim()
+        : '';
+
+    if (!rawContent) {
+      return res
+        .status(502)
+        .json({ error: 'OpenAI returned an empty response for post-call coaching' });
+    }
+
+    let coaching;
+    try {
+      coaching = JSON.parse(rawContent);
+    } catch (err) {
+      logger.error({ err, jobId, rawContent }, 'Failed to parse post-call coaching JSON');
+      return res
+        .status(502)
+        .json({ error: 'Failed to parse AI response for post-call coaching' });
+    }
+
+    const recordId = generateJobId();
+    const createdAt = new Date().toISOString();
+
+    try {
+      savePostcallCoaching({
+        id: recordId,
+        jobId,
+        precallPlanId: precallPlanId || null,
+        createdAt,
+        coachingJson: coaching,
+        emailStatus: null,
+        emailSentAt: null,
+        error: null,
+      });
+    } catch (err) {
+      logger.error({ err, jobId, recordId }, 'Failed to persist post-call coaching');
+      return res.status(500).json({ error: 'Failed to save post-call coaching' });
+    }
+
+    return res.json({
+      id: recordId,
+      jobId,
+      precallPlanId: precallPlanId || null,
+      createdAt,
+      coaching,
+    });
+  } catch (error) {
+    console.error('Error in /postcall-coaching', error);
+    logger.error({ err: error }, 'Error in /postcall-coaching');
+    return res.status(500).json({ error: 'Failed to generate post-call coaching' });
   }
 });
 

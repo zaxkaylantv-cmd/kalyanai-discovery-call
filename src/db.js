@@ -79,6 +79,19 @@ function createSqliteDb(Database) {
           coachingJson TEXT
         )
       `).run();
+
+    db.prepare(`
+        CREATE TABLE IF NOT EXISTS postcall_coaching (
+          id TEXT PRIMARY KEY,
+          jobId TEXT NOT NULL,
+          precallPlanId TEXT,
+          createdAt TEXT NOT NULL,
+          coachingJson TEXT NOT NULL,
+          emailStatus TEXT,
+          emailSentAt TEXT,
+          error TEXT
+        )
+      `).run();
   }
 
   /**
@@ -233,6 +246,73 @@ function createSqliteDb(Database) {
     return stmt.run(id);
   }
 
+  function savePostcallCoaching({
+    id,
+    jobId,
+    precallPlanId,
+    createdAt,
+    coachingJson,
+    emailStatus = null,
+    emailSentAt = null,
+    error = null,
+  }) {
+    const stmt = db.prepare(`
+        INSERT INTO postcall_coaching (
+          id,
+          jobId,
+          precallPlanId,
+          createdAt,
+          coachingJson,
+          emailStatus,
+          emailSentAt,
+          error
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+
+    stmt.run(
+      id,
+      jobId,
+      precallPlanId ?? null,
+      createdAt,
+      JSON.stringify(coachingJson),
+      emailStatus,
+      emailSentAt,
+      error
+    );
+  }
+
+  function getLatestPostcallCoachingByJobId(jobId) {
+    const row = db.prepare(`
+        SELECT *
+        FROM postcall_coaching
+        WHERE jobId = ?
+        ORDER BY datetime(createdAt) DESC
+        LIMIT 1
+      `).get(jobId);
+
+    if (!row) {
+      return null;
+    }
+
+    let coaching;
+    try {
+      coaching = JSON.parse(row.coachingJson);
+    } catch {
+      coaching = null;
+    }
+
+    return {
+      id: row.id,
+      jobId: row.jobId,
+      precallPlanId: row.precallPlanId,
+      createdAt: row.createdAt,
+      coaching,
+      emailStatus: row.emailStatus,
+      emailSentAt: row.emailSentAt,
+      error: row.error,
+    };
+  }
+
   /**
    * Update an existing job by id
    * fields is an object like { status, resultSummary, analysisJson, error }
@@ -324,6 +404,8 @@ function createSqliteDb(Database) {
     getRecentPrecallPlans,
     getPrecallPlanById,
     deletePrecallPlanById,
+    savePostcallCoaching,
+    getLatestPostcallCoachingByJobId,
     updateJob,
     getJobs,
     getJobById,
@@ -334,6 +416,7 @@ function createSqliteDb(Database) {
 function createInMemoryDb() {
   const jobs = [];
   const jobsById = new Map();
+  const postcallCoachingRecords = [];
 
   function initDb() {
     // Nothing to do for in-memory setup
@@ -413,6 +496,77 @@ function createInMemoryDb() {
     jobsById.delete(`precall:${id}`);
   }
 
+  function savePostcallCoaching({
+    id,
+    jobId,
+    precallPlanId,
+    createdAt,
+    coachingJson,
+    emailStatus = null,
+    emailSentAt = null,
+    error = null,
+  }) {
+    const record = {
+      id,
+      jobId,
+      precallPlanId: precallPlanId || null,
+      createdAt,
+      coachingJson: JSON.stringify(coachingJson),
+      emailStatus,
+      emailSentAt,
+      error,
+    };
+
+    const existingIndex = postcallCoachingRecords.findIndex(
+      (entry) => entry.id === id
+    );
+    if (existingIndex >= 0) {
+      postcallCoachingRecords[existingIndex] = record;
+    } else {
+      postcallCoachingRecords.push(record);
+    }
+  }
+
+  function getLatestPostcallCoachingByJobId(jobId) {
+    let latest = null;
+
+    for (const entry of postcallCoachingRecords) {
+      if (entry.jobId !== jobId) {
+        continue;
+      }
+
+      if (
+        !latest ||
+        new Date(entry.createdAt).getTime() >
+          new Date(latest.createdAt).getTime()
+      ) {
+        latest = entry;
+      }
+    }
+
+    if (!latest) {
+      return null;
+    }
+
+    let coaching;
+    try {
+      coaching = JSON.parse(latest.coachingJson);
+    } catch {
+      coaching = null;
+    }
+
+    return {
+      id: latest.id,
+      jobId: latest.jobId,
+      precallPlanId: latest.precallPlanId,
+      createdAt: latest.createdAt,
+      coaching,
+      emailStatus: latest.emailStatus,
+      emailSentAt: latest.emailSentAt,
+      error: latest.error,
+    };
+  }
+
   function updateJob(id, fields) {
     if (!id) {
       throw new Error("updateJob: id is required");
@@ -483,6 +637,8 @@ function createInMemoryDb() {
     getRecentPrecallPlans,
     getPrecallPlanById,
     deletePrecallPlanById,
+    savePostcallCoaching,
+    getLatestPostcallCoachingByJobId,
     updateJob,
     getJobs,
     getJobById,
