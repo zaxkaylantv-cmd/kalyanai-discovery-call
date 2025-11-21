@@ -12,6 +12,9 @@ const { openai } = require('./openaiClient');
 const {
   initDb,
   createJob,
+  createPrecallPlan,
+  getRecentPrecallPlans,
+  getPrecallPlanById,
   updateJob,
   getJobs,
   getJobById,
@@ -469,6 +472,68 @@ app.delete('/jobs/:id', async (req, res) => {
   return res.json({ success: true });
 });
 
+// ---------------- Pre-call plans history routes ----------------
+
+app.get('/precall-plans', (req, res) => {
+  try {
+    const plans = getRecentPrecallPlans(20);
+    return res.json({ plans });
+  } catch (err) {
+    console.error('Failed to fetch recent precall plans', err);
+    logger.error({ err }, 'Failed to fetch recent precall plans');
+    return res
+      .status(500)
+      .json({ error: 'Failed to fetch precall plans.' });
+  }
+});
+
+app.get('/precall-plans/:id', (req, res) => {
+  const { id } = req.params || {};
+
+  if (!id) {
+    return res.status(400).json({ error: 'Invalid precall plan id' });
+  }
+
+  try {
+    const plan = getPrecallPlanById(id);
+    if (!plan) {
+      return res.status(404).json({ error: 'Precall plan not found' });
+    }
+
+    let briefing = null;
+    let checklist = [];
+    let coaching = null;
+
+    try {
+      briefing = JSON.parse(plan.briefingJson);
+      checklist = JSON.parse(plan.checklistJson);
+      coaching = plan.coachingJson ? JSON.parse(plan.coachingJson) : null;
+    } catch (e) {
+      console.error('Failed to parse precall plan JSON', e);
+      logger.error({ e, id }, 'Failed to parse precall plan JSON');
+    }
+
+    return res.json({
+      id: plan.id,
+      createdAt: plan.createdAt,
+      clientName: plan.clientName,
+      companyName: plan.companyName,
+      meetingGoal: plan.meetingGoal,
+      offerName: plan.offerName,
+      desiredOutcome: plan.desiredOutcome,
+      briefing,
+      checklist,
+      coaching,
+    });
+  } catch (err) {
+    console.error('Failed to fetch precall plan', err);
+    logger.error({ err, id }, 'Failed to fetch precall plan');
+    return res
+      .status(500)
+      .json({ error: 'Failed to fetch precall plan.' });
+  }
+});
+
 // ---------------- Pre-call prep route ----------------
 
 app.post('/precall-prep', async (req, res) => {
@@ -518,7 +583,34 @@ app.post('/precall-prep', async (req, res) => {
       (plan && Array.isArray(plan.checklist) && plan.checklist) ||
       [];
     console.log('Precall checklist length:', checklist.length);
-    return res.json(plan);
+
+    const precallPlanId = generateJobId();
+    const createdAt = new Date().toISOString();
+
+    const briefingJson = JSON.stringify(plan && plan.briefing ? plan.briefing : null);
+    const checklistJson = JSON.stringify(checklist);
+    const coachingJson = JSON.stringify(
+      plan && Array.isArray(plan.coachingNotes) ? plan.coachingNotes : null,
+    );
+
+    try {
+      createPrecallPlan({
+        id: precallPlanId,
+        createdAt,
+        clientName,
+        companyName,
+        meetingGoal,
+        offerName,
+        desiredOutcome,
+        briefingJson,
+        checklistJson,
+        coachingJson,
+      });
+    } catch (dbErr) {
+      logger.error({ dbErr }, 'Failed to persist precall plan to database');
+    }
+
+    return res.json({ ...plan, precallPlanId });
   } catch (err) {
     console.error('Failed to generate pre-call prep plan', err);
     logger.error({ err }, 'Failed to generate pre-call prep plan');

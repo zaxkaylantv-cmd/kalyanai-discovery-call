@@ -64,6 +64,21 @@ function createSqliteDb(Database) {
     } catch (e) {
       // Ignore duplicate column errors or other non-fatal issues
     }
+
+    db.prepare(`
+        CREATE TABLE IF NOT EXISTS precall_plans (
+          id TEXT PRIMARY KEY,
+          createdAt TEXT NOT NULL,
+          clientName TEXT,
+          companyName TEXT,
+          meetingGoal TEXT,
+          offerName TEXT,
+          desiredOutcome TEXT,
+          briefingJson TEXT NOT NULL,
+          checklistJson TEXT NOT NULL,
+          coachingJson TEXT
+        )
+      `).run();
   }
 
   /**
@@ -116,6 +131,97 @@ function createSqliteDb(Database) {
       `);
 
     stmt.run(toInsert);
+  }
+
+  /**
+   * Create a new precall plan record
+   * plan = {
+   *   id,
+   *   createdAt,
+   *   clientName,
+   *   companyName,
+   *   meetingGoal,
+   *   offerName,
+   *   desiredOutcome,
+   *   briefingJson,
+   *   checklistJson,
+   *   coachingJson,
+   * }
+   */
+  function createPrecallPlan(plan) {
+    const toInsert = {
+      id: plan.id,
+      createdAt: plan.createdAt,
+      clientName: plan.clientName || null,
+      companyName: plan.companyName || null,
+      meetingGoal: plan.meetingGoal || null,
+      offerName: plan.offerName || null,
+      desiredOutcome: plan.desiredOutcome || null,
+      briefingJson: plan.briefingJson,
+      checklistJson: plan.checklistJson,
+      coachingJson: plan.coachingJson || null,
+    };
+
+    const stmt = db.prepare(`
+        INSERT INTO precall_plans (
+          id,
+          createdAt,
+          clientName,
+          companyName,
+          meetingGoal,
+          offerName,
+          desiredOutcome,
+          briefingJson,
+          checklistJson,
+          coachingJson
+        ) VALUES (
+          @id,
+          @createdAt,
+          @clientName,
+          @companyName,
+          @meetingGoal,
+          @offerName,
+          @desiredOutcome,
+          @briefingJson,
+          @checklistJson,
+          @coachingJson
+        )
+      `);
+
+    stmt.run(toInsert);
+  }
+
+  function getRecentPrecallPlans(limit = 20) {
+    const safeLimit =
+      Number.isInteger(limit) && limit > 0
+        ? limit
+        : 20;
+
+    const stmt = db.prepare(`
+        SELECT
+          id,
+          createdAt,
+          clientName,
+          companyName,
+          meetingGoal,
+          offerName,
+          desiredOutcome
+        FROM precall_plans
+        ORDER BY datetime(createdAt) DESC
+        LIMIT ?
+      `);
+
+    return stmt.all(safeLimit);
+  }
+
+  function getPrecallPlanById(id) {
+    const stmt = db.prepare(`
+        SELECT *
+        FROM precall_plans
+        WHERE id = ?
+      `);
+
+    return stmt.get(id);
   }
 
   /**
@@ -205,6 +311,9 @@ function createSqliteDb(Database) {
   return {
     initDb,
     createJob,
+    createPrecallPlan,
+    getRecentPrecallPlans,
+    getPrecallPlanById,
     updateJob,
     getJobs,
     getJobById,
@@ -243,6 +352,51 @@ function createInMemoryDb() {
     } else {
       jobs.push(record);
     }
+  }
+
+  function createPrecallPlan(plan) {
+    const record = {
+      id: plan.id,
+      createdAt: plan.createdAt,
+      clientName: plan.clientName || null,
+      companyName: plan.companyName || null,
+      meetingGoal: plan.meetingGoal || null,
+      offerName: plan.offerName || null,
+      desiredOutcome: plan.desiredOutcome || null,
+      briefingJson: plan.briefingJson,
+      checklistJson: plan.checklistJson,
+      coachingJson: plan.coachingJson || null,
+    };
+
+    // In-memory store: reuse jobs arrays/maps semantics but separate structure
+    // For simplicity, store precall plans alongside jobsById using a distinct key prefix
+    jobsById.set(`precall:${record.id}`, record);
+  }
+
+  function getRecentPrecallPlans(limit = 20) {
+    const safeLimit =
+      Number.isInteger(limit) && limit > 0
+        ? limit
+        : 20;
+
+    const plans = [];
+    for (const [key, value] of jobsById.entries()) {
+      if (key.startsWith("precall:")) {
+        plans.push({ ...value });
+      }
+    }
+
+    return plans
+      .sort(
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      )
+      .slice(0, safeLimit);
+  }
+
+  function getPrecallPlanById(id) {
+    const record = jobsById.get(`precall:${id}`);
+    return record ? { ...record } : null;
   }
 
   function updateJob(id, fields) {
@@ -311,6 +465,9 @@ function createInMemoryDb() {
   return {
     initDb,
     createJob,
+    createPrecallPlan,
+    getRecentPrecallPlans,
+    getPrecallPlanById,
     updateJob,
     getJobs,
     getJobById,
