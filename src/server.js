@@ -20,6 +20,8 @@ const {
   getLatestPostcallCoachingByJobId,
   saveCallChecklist,
   getLatestCallChecklistByJobId,
+  getUserSettings,
+  upsertUserSettings,
   updateJob,
   getJobs,
   getJobById,
@@ -373,6 +375,39 @@ app.options('*', cors(corsOptions));
 
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
+});
+
+app.get('/settings', (req, res) => {
+  try {
+    const settings =
+      getUserSettings() || {
+        id: null,
+        createdAt: null,
+        updatedAt: null,
+        autoPrecallEmail: true,
+        autoPostcallCoachingEmail: false,
+      };
+    return res.json(settings);
+  } catch (error) {
+    console.error('Error in GET /settings', error);
+    return res.status(500).json({ error: 'Failed to load settings' });
+  }
+});
+
+app.post('/settings', (req, res) => {
+  try {
+    const { autoPrecallEmail, autoPostcallCoachingEmail } = req.body || {};
+
+    const updated = upsertUserSettings({
+      autoPrecallEmail: Boolean(autoPrecallEmail),
+      autoPostcallCoachingEmail: Boolean(autoPostcallCoachingEmail),
+    });
+
+    return res.json(updated);
+  } catch (error) {
+    console.error('Error in POST /settings', error);
+    return res.status(500).json({ error: 'Failed to save settings' });
+  }
 });
 
 app.post('/process-file', upload.single('file'), (req, res) => {

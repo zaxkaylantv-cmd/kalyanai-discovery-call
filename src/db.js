@@ -102,6 +102,16 @@ function createSqliteDb(Database) {
           coverageJson TEXT NOT NULL
         )
       `).run();
+
+    db.prepare(`
+        CREATE TABLE IF NOT EXISTS user_settings (
+          id TEXT PRIMARY KEY,
+          createdAt TEXT NOT NULL,
+          updatedAt TEXT NOT NULL,
+          autoPrecallEmail INTEGER NOT NULL DEFAULT 1,
+          autoPostcallCoachingEmail INTEGER NOT NULL DEFAULT 0
+        )
+      `).run();
   }
 
   /**
@@ -378,6 +388,51 @@ function createSqliteDb(Database) {
     };
   }
 
+  function getUserSettings() {
+    const row = db.prepare(
+      `SELECT * FROM user_settings LIMIT 1`
+    ).get();
+
+    if (!row) return null;
+
+    return {
+      id: row.id,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+      autoPrecallEmail: row.autoPrecallEmail === 1,
+      autoPostcallCoachingEmail: row.autoPostcallCoachingEmail === 1,
+    };
+  }
+
+  function upsertUserSettings(settings = {}) {
+    const existing = getUserSettings();
+    const now = new Date().toISOString();
+
+    const autoPrecallEmail = settings.autoPrecallEmail ? 1 : 0;
+    const autoPostcallCoachingEmail = settings.autoPostcallCoachingEmail ? 1 : 0;
+
+    if (!existing) {
+      const id =
+        settings.id ||
+        (typeof crypto !== "undefined" && crypto.randomUUID
+          ? crypto.randomUUID()
+          : String(Date.now()));
+      db.prepare(
+        `INSERT INTO user_settings (id, createdAt, updatedAt, autoPrecallEmail, autoPostcallCoachingEmail)
+         VALUES (?, ?, ?, ?, ?)`
+      ).run(id, now, now, autoPrecallEmail, autoPostcallCoachingEmail);
+      return getUserSettings();
+    }
+
+    db.prepare(
+      `UPDATE user_settings
+       SET updatedAt = ?, autoPrecallEmail = ?, autoPostcallCoachingEmail = ?
+       WHERE id = ?`
+    ).run(now, autoPrecallEmail, autoPostcallCoachingEmail, existing.id);
+
+    return getUserSettings();
+  }
+
   /**
    * Update an existing job by id
    * fields is an object like { status, resultSummary, analysisJson, error }
@@ -473,6 +528,8 @@ function createSqliteDb(Database) {
     getLatestPostcallCoachingByJobId,
     saveCallChecklist,
     getLatestCallChecklistByJobId,
+    getUserSettings,
+    upsertUserSettings,
     updateJob,
     getJobs,
     getJobById,
@@ -485,6 +542,7 @@ function createInMemoryDb() {
   const jobsById = new Map();
   const postcallCoachingRecords = [];
   const callChecklists = [];
+  let userSettings = null;
 
   function initDb() {
     // Nothing to do for in-memory setup
@@ -695,6 +753,51 @@ function createInMemoryDb() {
     };
   }
 
+  function getUserSettings() {
+    if (!userSettings) {
+      return null;
+    }
+
+    return {
+      id: userSettings.id,
+      createdAt: userSettings.createdAt,
+      updatedAt: userSettings.updatedAt,
+      autoPrecallEmail: userSettings.autoPrecallEmail === 1,
+      autoPostcallCoachingEmail: userSettings.autoPostcallCoachingEmail === 1,
+    };
+  }
+
+  function upsertUserSettings(settings = {}) {
+    const now = new Date().toISOString();
+    const autoPrecallEmail = settings.autoPrecallEmail ? 1 : 0;
+    const autoPostcallCoachingEmail = settings.autoPostcallCoachingEmail ? 1 : 0;
+
+    if (!userSettings) {
+      const id =
+        settings.id ||
+        (typeof crypto !== "undefined" && crypto.randomUUID
+          ? crypto.randomUUID()
+          : String(Date.now()));
+      userSettings = {
+        id,
+        createdAt: now,
+        updatedAt: now,
+        autoPrecallEmail,
+        autoPostcallCoachingEmail,
+      };
+      return getUserSettings();
+    }
+
+    userSettings = {
+      ...userSettings,
+      updatedAt: now,
+      autoPrecallEmail,
+      autoPostcallCoachingEmail,
+    };
+
+    return getUserSettings();
+  }
+
   function updateJob(id, fields) {
     if (!id) {
       throw new Error("updateJob: id is required");
@@ -769,6 +872,8 @@ function createInMemoryDb() {
     getLatestPostcallCoachingByJobId,
     saveCallChecklist,
     getLatestCallChecklistByJobId,
+    getUserSettings,
+    upsertUserSettings,
     updateJob,
     getJobs,
     getJobById,
