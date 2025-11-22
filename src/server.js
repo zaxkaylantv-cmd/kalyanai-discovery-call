@@ -736,7 +736,18 @@ app.post('/precall-prep', async (req, res) => {
       emailStatus = 'skipped';
     }
 
-    return res.json({ ...plan, precallPlanId, emailStatus });
+    const meetingSuccess =
+      plan && typeof plan.meetingSuccess === 'string' ? plan.meetingSuccess : '';
+    const criticalTopics =
+      plan && Array.isArray(plan.criticalTopics) ? plan.criticalTopics : [];
+
+    return res.json({
+      ...plan,
+      meetingSuccess,
+      criticalTopics,
+      precallPlanId,
+      emailStatus,
+    });
   } catch (err) {
     console.error('Failed to generate pre-call prep plan', err);
     logger.error({ err }, 'Failed to generate pre-call prep plan');

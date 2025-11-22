@@ -82,8 +82,8 @@ Briefing fields:
   - coachingNotes must contain 3-6 short, practical, high-leverage tips, each a single concise sentence that helps the user run a stronger sales conversation towards the desiredOutcome. No fluff, no generic advice.
   
   Meeting success and critical topics:
-  - meetingSuccess must be 1-2 sentences, very practical and specific to this particular meetingGoal and desiredOutcome, describing what success looks like by the end of this call for the salesperson.
-  - criticalTopics should normally contain 3-5 items whenever there is enough information; each item must have:
+  - meetingSuccess is required and must be a non-empty 1-2 sentence string, very practical and specific to this particular meetingGoal, desiredOutcome, offerName, and notes, describing what success looks like by the end of this call for the salesperson. Do not leave it blank or use filler text.
+  - criticalTopics is required and must contain at least 3 items whenever there is any information about the meetingGoal, desiredOutcome, offerName, or notes. Each item must have:
     - "title": a short label for the topic,
     - "whyItMatters": one or two sentences in plain English explaining why this topic is critical for this call,
     - "questionsToCover": an array of 2-4 short, bullet-level questions (strings) the salesperson should be ready to ask about this topic.
@@ -203,6 +203,7 @@ async function generatePrecallPrep(planInput = {}) {
     '- When website context is available, briefing.companyOverview must be a short 1-3 sentence description of what the company does and who they serve, based primarily on the website text.',
     '- Only fall back to the string \"No detailed company information is available from the inputs or website.\" for briefing.companyOverview if the HTML clearly contains no meaningful marketing or product/service description.',
     '- For briefing.meetingFocus, use both the structured inputs (meetingGoal, goalDescription, offerName, offerSummary, desiredOutcome) and the website text to describe what this specific call should focus on (for example aligning your offer with their stated services or target customers).',
+    '- Do not return empty strings or empty arrays; when details are limited, infer reasonable, goal-aligned guidance from meetingGoal, desiredOutcome, offerName, offerSummary, and notes so every required field stays populated.',
     '- Output ONLY a JSON object with fields briefing, questionChecklist, coachingNotes, metadata, emailSubject, and emailBody.',
   ].join('\n');
 
