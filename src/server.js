@@ -61,7 +61,7 @@ Inputs you may use (any can be missing):
 Return only the JSON object.`;
 
 const POSTCALL_COACHING_MODEL =
-  process.env.POSTCALL_COACHING_MODEL || 'gpt-4.1-mini';
+  process.env.POSTCALL_COACHING_MODEL || 'gpt-5.1-mini';
 const POSTCALL_COACHING_SYSTEM_PROMPT = `You are a post-call sales coach for Kalyan AI.
 
 Your job is to coach the salesperson (Zax) on how they ran this discovery call. You are NOT writing to the client and you should NOT summarise the client’s business. Focus only on coaching Zax and guiding his next actions.
