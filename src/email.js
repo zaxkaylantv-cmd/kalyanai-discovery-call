@@ -306,8 +306,57 @@ async function sendPrecallPlanEmail(options = {}) {
   }
 }
 
+async function sendDetailedReportEmail({ to, subject, text, html } = {}) {
+  if (!FROM_EMAIL) {
+    console.warn(
+      "sendDetailedReportEmail: FROM_EMAIL not configured; skipping email.",
+    );
+    return false;
+  }
+
+  if (!transporter) {
+    console.warn(
+      "sendDetailedReportEmail: transporter not configured correctly; skipping email.",
+    );
+    return false;
+  }
+
+  const recipient =
+    (typeof to === "string" && to.trim()) ||
+    NOTIFY_EMAIL ||
+    "future@kalyanai.io";
+
+  const safeSubject =
+    (typeof subject === "string" && subject.trim()) ||
+    "Kalyan AI - Post-call report";
+
+  const safeText =
+    (typeof text === "string" && text.trim()) ||
+    "Post-call report is ready.";
+
+  const mailOptions = {
+    from: FROM_EMAIL,
+    to: recipient,
+    subject: safeSubject,
+    text: safeText,
+  };
+
+  if (typeof html === "string" && html.trim()) {
+    mailOptions.html = html;
+  }
+
+  try {
+    await transporter.sendMail(mailOptions);
+    return true;
+  } catch (err) {
+    console.error("sendDetailedReportEmail: failed to send email", err);
+    return false;
+  }
+}
+
 module.exports = {
   buildJobSummaryBody,
   sendJobSummaryEmail,
   sendPrecallPlanEmail,
+  sendDetailedReportEmail,
 };
