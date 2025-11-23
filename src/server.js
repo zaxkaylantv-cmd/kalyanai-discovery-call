@@ -18,8 +18,11 @@ const {
   deletePrecallPlanById,
   savePostcallCoaching,
   getLatestPostcallCoachingByJobId,
+  deletePostcallCoachingByJobId,
   saveCallChecklist,
   getLatestCallChecklistByJobId,
+  saveAiChecklistCoverage,
+  getLatestAiChecklistCoverageByJobId,
   getUserSettings,
   upsertUserSettings,
   updateJob,
@@ -61,7 +64,9 @@ Inputs you may use (any can be missing):
 Return only the JSON object.`;
 
 const POSTCALL_COACHING_MODEL =
-  process.env.POSTCALL_COACHING_MODEL || 'gpt-5.1-mini';
+  process.env.POSTCALL_COACHING_MODEL || 'gpt-4.1-mini';
+const CHECKLIST_COVERAGE_MODEL =
+  process.env.CHECKLIST_COVERAGE_MODEL || 'gpt-4.1-mini';
 const POSTCALL_COACHING_SYSTEM_PROMPT = `You are a post-call sales coach for Kalyan AI.
 
 Your job is to coach the salesperson (Zax) on how they ran this discovery call. You are NOT writing to the client and you should NOT summarise the client’s business. Focus only on coaching Zax and guiding his next actions.
@@ -98,6 +103,26 @@ Output rules:
 - Respond with JSON only.
 - Do NOT wrap the JSON in backticks.
 - Do NOT include any extra text before or after the JSON object.`;
+const CHECKLIST_COVERAGE_SYSTEM_PROMPT = `You are a call analyst for Kalyan AI. Compare each pre-call checklist question with the discovery call transcript and determine whether it was fully asked, partially covered, or not asked. Respond with a SINGLE JSON object ONLY, using this exact shape:
+{
+  "questions": [
+    {
+      "id": "string",
+      "question": "string",
+      "status": "asked" | "partially_asked" | "not_asked",
+      "confidence": number between 0 and 1,
+      "rationale": "short explanation"
+    }
+  ]
+}
+Rules:
+- Reuse the IDs and question text exactly as provided. Do not drop or add questions.
+- Mark status "asked" only when the transcript clearly shows that question (or a direct equivalent) was asked and answered.
+- Use "partially_asked" if the topic was touched but not fully addressed.
+- Use "not_asked" when there is no clear evidence in the transcript.
+- Confidence must be numeric between 0 and 1 (e.g., 0.0, 0.42, 0.9).
+- Rationale should be one concise sentence referencing the relevant transcript evidence (or lack of it).
+- Do NOT hallucinate or assume content that is not present in the transcript; be conservative and honest about uncertainty.`;
 
 const MAX_TRANSCRIPT_CHARS = 15000;
 const MAX_ANALYSIS_CHARS = 12000;
@@ -128,6 +153,52 @@ function mapRowToJob(row) {
     emailStatus: row.emailStatus || null,
     emailSentAt: row.emailSentAt || null,
   };
+}
+
+function buildTranscriptExcerptForJob(job, analysisObject) {
+  let transcriptText = null;
+  const jobId = job && job.id !== undefined && job.id !== null ? String(job.id) : null;
+
+  if (job && typeof job.transcript === 'string' && job.transcript.trim()) {
+    transcriptText = job.transcript.trim();
+  }
+
+  if (!transcriptText && analysisObject) {
+    const candidates = [
+      analysisObject.transcript,
+      analysisObject.transcribed_text,
+      analysisObject.fullTranscript,
+      analysisObject.transcriptText,
+    ];
+    for (const candidate of candidates) {
+      if (typeof candidate === 'string' && candidate.trim()) {
+        transcriptText = candidate.trim();
+        break;
+      }
+    }
+  }
+
+  if (!transcriptText && jobId) {
+    const transcriptPath = path.join(UPLOAD_DIR, `${jobId}.transcript.txt`);
+    if (fs.existsSync(transcriptPath)) {
+      try {
+        transcriptText = fs.readFileSync(transcriptPath, 'utf8');
+      } catch (err) {
+        const transcriptError = new Error('TRANSCRIPT_READ_ERROR');
+        transcriptError.code = 'TRANSCRIPT_READ_ERROR';
+        transcriptError.cause = err;
+        transcriptError.jobId = jobId;
+        transcriptError.transcriptPath = transcriptPath;
+        throw transcriptError;
+      }
+    }
+  }
+
+  return transcriptText && transcriptText.length > 0
+    ? transcriptText.length > MAX_TRANSCRIPT_CHARS
+      ? `${transcriptText.slice(0, MAX_TRANSCRIPT_CHARS)}\n...[transcript truncated]`
+      : transcriptText
+    : 'Transcript unavailable.';
 }
 
 // ---------------- Discovery-call job processing ----------------
@@ -813,52 +884,30 @@ app.post('/postcall-coaching', async (req, res) => {
       try {
         analysisObject = JSON.parse(job.analysisJson);
       } catch (err) {
-        logger.warn({ err, jobId }, 'Failed to parse analysis JSON for postcall coaching');
+        logger.error({ err, jobId }, 'Failed to parse analysis JSON for postcall coaching');
+        return res
+          .status(500)
+          .json({ error: 'Failed to read analysis data for post-call coaching' });
       }
-    } else if (job.analysisJson && typeof job.analysisJson === 'object') {
-      analysisObject = job.analysisJson;
-    }
-
-    let transcriptText = null;
-    if (typeof jobRow.transcript === 'string' && jobRow.transcript.trim()) {
-      transcriptText = jobRow.transcript.trim();
-    }
-
-    if (!transcriptText && analysisObject) {
-      const candidates = [
-        analysisObject.transcript,
-        analysisObject.transcribed_text,
-        analysisObject.fullTranscript,
-        analysisObject.transcriptText,
-      ];
-      for (const candidate of candidates) {
-        if (typeof candidate === 'string' && candidate.trim()) {
-          transcriptText = candidate.trim();
-          break;
-        }
+      } else if (job.analysisJson && typeof job.analysisJson === 'object') {
+        analysisObject = job.analysisJson;
       }
-    }
 
-    if (!transcriptText) {
-      const transcriptPath = path.join(UPLOAD_DIR, `${jobId}.transcript.txt`);
-      if (fs.existsSync(transcriptPath)) {
-        try {
-          transcriptText = fs.readFileSync(transcriptPath, 'utf8');
-        } catch (err) {
-          logger.warn(
-            { err, jobId, transcriptPath },
+      let trimmedTranscript;
+      try {
+        trimmedTranscript = buildTranscriptExcerptForJob(jobRow, analysisObject);
+      } catch (err) {
+        if (err && err.code === 'TRANSCRIPT_READ_ERROR') {
+          logger.error(
+            { err: err.cause || err, jobId, transcriptPath: err.transcriptPath },
             'Failed to read transcript file for postcall coaching'
           );
+          return res
+            .status(500)
+            .json({ error: 'Failed to read transcript for post-call coaching' });
         }
+        throw err;
       }
-    }
-
-    const trimmedTranscript =
-      transcriptText && transcriptText.length > 0
-        ? transcriptText.length > MAX_TRANSCRIPT_CHARS
-          ? `${transcriptText.slice(0, MAX_TRANSCRIPT_CHARS)}\n...[transcript truncated]`
-          : transcriptText
-        : 'Transcript unavailable.';
 
     const callAnalysis = analysisObject || null;
     let callAnalysisForPrompt = 'callAnalysis: null';
@@ -1008,15 +1057,32 @@ app.post('/postcall-coaching', async (req, res) => {
       );
     }
 
-    const completion = await openai.chat.completions.create({
-      model: POSTCALL_COACHING_MODEL,
-      response_format: { type: 'json_object' },
-      temperature: 0.2,
-      messages: [
-        { role: 'system', content: POSTCALL_COACHING_SYSTEM_PROMPT },
-        { role: 'user', content: userMessageParts.join('\n') },
-      ],
-    });
+    let completion;
+    try {
+      completion = await openai.chat.completions.create({
+        model: POSTCALL_COACHING_MODEL,
+        response_format: { type: 'json_object' },
+        temperature: 0.2,
+        messages: [
+          { role: 'system', content: POSTCALL_COACHING_SYSTEM_PROMPT },
+          { role: 'user', content: userMessageParts.join('\n') },
+        ],
+      });
+    } catch (err) {
+      const openAiMessage =
+        err?.response?.data?.error?.message || err?.message || '';
+      const isModelError =
+        err?.response?.data?.error?.code === 'model_not_found' ||
+        /model/i.test(openAiMessage);
+      const clientMessage = isModelError
+        ? 'POSTCALL_COACHING_MODEL invalid or OpenAI request failed'
+        : 'OpenAI error in post-call coaching';
+      logger.error(
+        { err, jobId, model: POSTCALL_COACHING_MODEL },
+        'OpenAI chat completion failed for postcall coaching'
+      );
+      return res.status(502).json({ error: clientMessage });
+    }
 
     const rawContent =
       completion &&
@@ -1072,7 +1138,269 @@ app.post('/postcall-coaching', async (req, res) => {
   } catch (error) {
     console.error('Error in /postcall-coaching', error);
     logger.error({ err: error }, 'Error in /postcall-coaching');
-    return res.status(500).json({ error: 'Failed to generate post-call coaching' });
+    const safeMessage =
+      error && typeof error.message === 'string' ? error.message : 'Unknown error';
+    return res.status(500).json({
+      error: 'Failed to generate post-call coaching',
+      details: safeMessage,
+    });
+  }
+});
+
+app.delete('/postcall-coaching/job/:jobId', async (req, res) => {
+  const jobId = Number(req.params.jobId);
+  if (!Number.isInteger(jobId)) {
+    return res.status(400).json({ error: 'Invalid jobId' });
+  }
+
+  try {
+    await deletePostcallCoachingByJobId(jobId);
+    return res.json({ success: true });
+  } catch (err) {
+    console.error('Error deleting post-call coaching for job:', jobId, err);
+    logger.error({ err, jobId }, 'Failed to delete post-call coaching for job');
+    return res.status(500).json({ error: 'Failed to delete post-call coaching' });
+  }
+});
+
+app.post('/ai-checklist-coverage', async (req, res) => {
+  try {
+    const { jobId, precallPlanId } = req.body || {};
+    console.log(
+      'AI checklist coverage body:',
+      req.body,
+      'types:',
+      typeof jobId,
+      typeof precallPlanId
+    );
+    const parsedJobId = Number.parseInt(jobId, 10);
+    const parsedPrecallPlanId = Number.parseInt(precallPlanId, 10);
+
+    if (
+      Number.isNaN(parsedJobId) ||
+      Number.isNaN(parsedPrecallPlanId)
+    ) {
+      return res
+        .status(400)
+        .json({
+          error: 'Invalid jobId or precallPlanId; must be integers',
+          received: { jobId, precallPlanId },
+        });
+    }
+
+    if (!openai) {
+      return res
+        .status(500)
+        .json({ error: 'OpenAI client is not configured. Set OPENAI_API_KEY.' });
+    }
+
+    const jobIdString = String(parsedJobId);
+    const planIdString = String(parsedPrecallPlanId);
+
+    const jobRow = getJobById(jobIdString);
+    if (!jobRow) {
+      return res.status(404).json({ error: 'Job not found' });
+    }
+
+    const planRow = getPrecallPlanById(planIdString);
+    if (!planRow) {
+      return res.status(404).json({ error: 'Pre-call plan not found' });
+    }
+
+    let questionChecklist = [];
+    try {
+      const parsedChecklist = planRow.checklistJson
+        ? JSON.parse(planRow.checklistJson)
+        : null;
+      if (Array.isArray(parsedChecklist)) {
+        questionChecklist = parsedChecklist;
+      }
+    } catch (err) {
+      logger.warn(
+        { err, precallPlanId: planIdString },
+        'Failed to parse checklistJson for AI coverage'
+      );
+    }
+
+    if (!Array.isArray(questionChecklist) || questionChecklist.length === 0) {
+      return res
+        .status(400)
+        .json({ error: 'Pre-call plan has no question checklist' });
+    }
+
+    let analysisObject = null;
+    if (jobRow.analysisJson && typeof jobRow.analysisJson === 'string') {
+      try {
+        analysisObject = JSON.parse(jobRow.analysisJson);
+      } catch (err) {
+        logger.warn(
+          { err, jobId: jobIdString },
+          'Failed to parse analysisJson for AI coverage'
+        );
+      }
+    } else if (jobRow.analysisJson && typeof jobRow.analysisJson === 'object') {
+      analysisObject = jobRow.analysisJson;
+    }
+
+    let transcriptForPrompt;
+    try {
+      transcriptForPrompt = buildTranscriptExcerptForJob(jobRow, analysisObject);
+    } catch (err) {
+      if (err && err.code === 'TRANSCRIPT_READ_ERROR') {
+        logger.error(
+          { err: err.cause || err, jobId: jobIdString, transcriptPath: err.transcriptPath },
+          'Failed to read transcript file for AI coverage'
+        );
+        return res
+          .status(500)
+          .json({ error: 'Failed to read transcript for AI checklist coverage' });
+      }
+      throw err;
+    }
+
+    let transcript = transcriptForPrompt;
+
+    if (!transcript || !transcript.trim() || transcript === 'Transcript unavailable.') {
+      let analysisText = '';
+      if (analysisObject && typeof analysisObject === 'object') {
+        if (
+          typeof analysisObject.fullReport === 'string' &&
+          analysisObject.fullReport.trim()
+        ) {
+          analysisText = analysisObject.fullReport;
+        } else if (
+          typeof analysisObject.callSummary === 'string' &&
+          analysisObject.callSummary.trim()
+        ) {
+          analysisText = analysisObject.callSummary;
+        }
+      }
+      if (analysisText && analysisText.trim()) {
+        transcript = analysisText;
+      }
+    }
+
+    let transcriptWarning = '';
+
+    if (!transcript || !transcript.trim() || transcript === 'Transcript unavailable.') {
+      transcript = '';
+      transcriptWarning =
+        'Transcript is unavailable or empty; you must be conservative and cannot infer whether questions were asked.';
+    } else {
+      transcriptWarning = 'Transcript loaded successfully.';
+    }
+
+    const checklistForPrompt = questionChecklist.map((question, index) => {
+      const id =
+        typeof question?.id === 'string' && question.id.trim()
+          ? question.id.trim()
+          : `question_${index + 1}`;
+      const questionText =
+        typeof question?.question === 'string' && question.question.trim()
+          ? question.question.trim()
+          : `Unknown question ${index + 1}`;
+      return { id, question: questionText };
+    });
+
+    const userMessage = [
+      'You will receive pre-call checklist questions and a discovery call transcript (which may be truncated).',
+      'For each question, decide if it was asked, partially asked, or not asked based solely on the transcript. Be conservative and do not infer beyond the transcript.',
+      'If the transcript is empty or clearly unavailable, you must mark all questions as "not_asked" and explain in the rationale that there was no transcript to analyse. You must not hallucinate or guess that questions were asked without explicit evidence in the transcript.',
+      '',
+      `TRANSCRIPT WARNING: ${transcriptWarning}`,
+      '',
+      'Checklist questions (JSON):',
+      JSON.stringify(checklistForPrompt, null, 2),
+      '',
+      'Transcript:',
+      transcript,
+    ].join('\n');
+
+    let completion;
+    try {
+      completion = await openai.chat.completions.create({
+        model: CHECKLIST_COVERAGE_MODEL,
+        response_format: { type: 'json_object' },
+        temperature: 0.1,
+        messages: [
+          { role: 'system', content: CHECKLIST_COVERAGE_SYSTEM_PROMPT },
+          { role: 'user', content: userMessage },
+        ],
+      });
+    } catch (err) {
+      const openAiMessage =
+        err?.response?.data?.error?.message || err?.message || '';
+      const clientMessage = /model/i.test(openAiMessage)
+        ? 'CHECKLIST_COVERAGE_MODEL invalid or OpenAI request failed'
+        : 'OpenAI error generating checklist coverage';
+      logger.error(
+        { err, jobId: jobIdString, precallPlanId: planIdString },
+        'OpenAI chat completion failed for checklist coverage'
+      );
+      return res.status(502).json({ error: clientMessage });
+    }
+
+    const rawContent =
+      completion &&
+      Array.isArray(completion.choices) &&
+      completion.choices[0] &&
+      completion.choices[0].message &&
+      typeof completion.choices[0].message.content === 'string'
+        ? completion.choices[0].message.content.trim()
+        : '';
+
+    if (!rawContent) {
+      return res
+        .status(502)
+        .json({ error: 'OpenAI returned an empty response for checklist coverage' });
+    }
+
+    let coverageResult;
+    try {
+      coverageResult = JSON.parse(rawContent);
+    } catch (err) {
+      logger.error(
+        { err, jobId: jobIdString, rawContent },
+        'Failed to parse AI checklist coverage JSON'
+      );
+      return res
+        .status(502)
+        .json({ error: 'Failed to parse AI response for checklist coverage' });
+    }
+
+    if (
+      !coverageResult ||
+      typeof coverageResult !== 'object' ||
+      !Array.isArray(coverageResult.questions)
+    ) {
+      return res
+        .status(502)
+        .json({ error: 'AI response missing questions array' });
+    }
+
+    const createdAt = new Date().toISOString();
+
+    try {
+      await saveAiChecklistCoverage({
+        jobId: parsedJobId,
+        precallPlanId: parsedPrecallPlanId,
+        coverageJson: JSON.stringify(coverageResult.questions ?? []),
+        createdAt,
+      });
+    } catch (err) {
+      logger.error(
+        { err, jobId: jobIdString, precallPlanId: planIdString },
+        'Failed to persist AI checklist coverage'
+      );
+    }
+
+    return res.json(coverageResult);
+  } catch (err) {
+    console.error('Error in /ai-checklist-coverage:', err);
+    logger.error({ err }, 'Error in /ai-checklist-coverage');
+    return res
+      .status(500)
+      .json({ error: 'Failed to generate AI checklist coverage' });
   }
 });
 

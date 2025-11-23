@@ -104,6 +104,16 @@ function createSqliteDb(Database) {
       `).run();
 
     db.prepare(`
+        CREATE TABLE IF NOT EXISTS ai_checklist_coverage (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          jobId INTEGER NOT NULL,
+          precallPlanId INTEGER NOT NULL,
+          coverageJson TEXT NOT NULL,
+          createdAt TEXT NOT NULL
+        )
+      `).run();
+
+    db.prepare(`
         CREATE TABLE IF NOT EXISTS user_settings (
           id TEXT PRIMARY KEY,
           createdAt TEXT NOT NULL,
@@ -334,6 +344,15 @@ function createSqliteDb(Database) {
     };
   }
 
+  async function deletePostcallCoachingByJobId(jobId) {
+    const stmt = db.prepare(`
+        DELETE FROM postcall_coaching
+        WHERE jobId = ?
+      `);
+
+    stmt.run(jobId);
+  }
+
   function saveCallChecklist({
     id,
     jobId,
@@ -378,6 +397,53 @@ function createSqliteDb(Database) {
       coverage = JSON.parse(row.coverageJson);
     } catch {
       coverage = null;
+    }
+
+    return {
+      id: row.id,
+      jobId: row.jobId,
+      precallPlanId: row.precallPlanId,
+      createdAt: row.createdAt,
+      coverage,
+    };
+  }
+
+  function saveAiChecklistCoverage({
+    jobId,
+    precallPlanId,
+    coverageJson,
+    createdAt,
+  }) {
+    const stmt = db.prepare(`
+        INSERT INTO ai_checklist_coverage (
+          jobId,
+          precallPlanId,
+          coverageJson,
+          createdAt
+        ) VALUES (?, ?, ?, ?)
+      `);
+
+    stmt.run(jobId, precallPlanId, coverageJson, createdAt);
+  }
+
+  function getLatestAiChecklistCoverageByJobId(jobId) {
+    const row = db.prepare(`
+        SELECT *
+        FROM ai_checklist_coverage
+        WHERE jobId = ?
+        ORDER BY datetime(createdAt) DESC
+        LIMIT 1
+      `).get(jobId);
+
+    if (!row) {
+      return null;
+    }
+
+    let coverage;
+    try {
+      coverage = JSON.parse(row.coverageJson);
+    } catch {
+      coverage = row.coverageJson;
     }
 
     return {
@@ -529,8 +595,11 @@ function createSqliteDb(Database) {
     deletePrecallPlanById,
     savePostcallCoaching,
     getLatestPostcallCoachingByJobId,
+    deletePostcallCoachingByJobId,
     saveCallChecklist,
     getLatestCallChecklistByJobId,
+    saveAiChecklistCoverage,
+    getLatestAiChecklistCoverageByJobId,
     getUserSettings,
     upsertUserSettings,
     updateJob,
@@ -545,6 +614,7 @@ function createInMemoryDb() {
   const jobsById = new Map();
   const postcallCoachingRecords = [];
   const callChecklists = [];
+  const aiChecklistCoverageRecords = [];
   let userSettings = null;
 
   function initDb() {
@@ -696,6 +766,14 @@ function createInMemoryDb() {
     };
   }
 
+  async function deletePostcallCoachingByJobId(jobId) {
+    for (let i = postcallCoachingRecords.length - 1; i >= 0; i -= 1) {
+      if (postcallCoachingRecords[i].jobId === jobId) {
+        postcallCoachingRecords.splice(i, 1);
+      }
+    }
+  }
+
   function saveCallChecklist({
     id,
     jobId,
@@ -745,6 +823,60 @@ function createInMemoryDb() {
       coverage = JSON.parse(latest.coverageJson);
     } catch {
       coverage = null;
+    }
+
+    return {
+      id: latest.id,
+      jobId: latest.jobId,
+      precallPlanId: latest.precallPlanId,
+      createdAt: latest.createdAt,
+      coverage,
+    };
+  }
+
+  function saveAiChecklistCoverage({
+    jobId,
+    precallPlanId,
+    coverageJson,
+    createdAt,
+  }) {
+    const record = {
+      id: aiChecklistCoverageRecords.length + 1,
+      jobId,
+      precallPlanId,
+      coverageJson,
+      createdAt,
+    };
+
+    aiChecklistCoverageRecords.push(record);
+  }
+
+  function getLatestAiChecklistCoverageByJobId(jobId) {
+    let latest = null;
+
+    for (const entry of aiChecklistCoverageRecords) {
+      if (entry.jobId !== jobId) {
+        continue;
+      }
+
+      if (
+        !latest ||
+        new Date(entry.createdAt).getTime() >
+          new Date(latest.createdAt).getTime()
+      ) {
+        latest = entry;
+      }
+    }
+
+    if (!latest) {
+      return null;
+    }
+
+    let coverage;
+    try {
+      coverage = JSON.parse(latest.coverageJson);
+    } catch {
+      coverage = latest.coverageJson;
     }
 
     return {
@@ -877,8 +1009,11 @@ function createInMemoryDb() {
     deletePrecallPlanById,
     savePostcallCoaching,
     getLatestPostcallCoachingByJobId,
+    deletePostcallCoachingByJobId,
     saveCallChecklist,
     getLatestCallChecklistByJobId,
+    saveAiChecklistCoverage,
+    getLatestAiChecklistCoverageByJobId,
     getUserSettings,
     upsertUserSettings,
     updateJob,

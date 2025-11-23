@@ -1,7 +1,7 @@
 const { openai } = require('../openaiClient');
 const logger = require('../logger');
 
-const MODEL = process.env.PRECALL_PREP_MODEL || 'gpt-5.1-mini';
+const MODEL = process.env.PRECALL_PREP_MODEL || 'gpt-4.1-mini';
 
 const SYSTEM_PROMPT = `You are a senior sales strategist and pre-call coach for Kalyan AI.
 You ONLY respond with a SINGLE valid JSON object that matches this exact schema and nothing else:
@@ -56,8 +56,10 @@ No guessing / no speculation:
 - When information is unclear or missing, say "Unknown" instead of using hedging language.
 
 Using website HTML (when provided):
-- If the [Website context] section contains website HTML, carefully read headings, visible text, and marketing copy to infer what the company does and who it serves.
-- Use only information that is clearly stated or strongly implied in that text (for example product categories, service types, and target industries or segments).
+- Carefully read and prioritise the [Website context] section whenever it contains HTML. Use headings, marketing copy, and visible text to explain what the company does and who they serve, quoting or paraphrasing only what is clearly supported.
+- The website snippet may be partial due to technical limits; use everything provided, but never invent extra website details that are not in the snippet and do not extrapolate beyond what is clearly implied.
+- If the website could not be loaded or the snippet is clearly generic/minimal, state this once (for example in briefing.companyOverview or coachingNotes) so the user knows the plan is based mainly on the structured inputs, and focus on practical, general discovery guidance rather than pretending to know specifics.
+- Use only information that is clearly stated or strongly implied in the text (for example product categories, service types, and target industries or segments).
 - It is acceptable to summarise in neutral terms such as "AI consultancy for SMEs" or "e-commerce brand selling garden products" if those phrases or very similar ideas appear on the site.
 - Do NOT guess specific numbers, locations, or product names that are not present in the inputs or in the website HTML snippet.
 
@@ -217,6 +219,18 @@ function sanitizePrecallPlan(plan) {
   return plan;
 }
 
+function normalizeWebsiteUrl(raw) {
+  if (!raw || typeof raw !== 'string') return null;
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    return null;
+  }
+  if (/^https?:\/\//i.test(trimmed)) {
+    return trimmed;
+  }
+  return `https://${trimmed.replace(/^https?:\/\//i, '')}`;
+}
+
 
 async function generatePrecallPrep(planInput = {}) {
   if (!openai) {
@@ -237,15 +251,17 @@ async function generatePrecallPrep(planInput = {}) {
   } = planInput;
 
   let websiteContext = null;
+  const normalizedWebsiteUrl = normalizeWebsiteUrl(websiteUrl);
+  const isNetworkAllowed = process.env.ALLOW_NETWORK === '1';
 
-  if (websiteUrl && typeof websiteUrl === 'string' && websiteUrl.startsWith('http')) {
+  if (normalizedWebsiteUrl && isNetworkAllowed) {
     try {
-      console.log('[Precall] Fetching website URL:', websiteUrl);
+      console.log('[Precall] Fetching website URL:', normalizedWebsiteUrl);
 
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
 
-      const response = await fetch(websiteUrl, { signal: controller.signal });
+      const response = await fetch(normalizedWebsiteUrl, { signal: controller.signal });
       clearTimeout(timeout);
 
       if (response.ok) {
@@ -262,8 +278,10 @@ async function generatePrecallPrep(planInput = {}) {
         error && error.message ? error.message : error
       );
     }
-  } else {
+  } else if (!normalizedWebsiteUrl) {
     console.log('[Precall] No valid websiteUrl provided.');
+  } else {
+    console.log('[Precall] Network disabled, skipping website fetch.');
   }
 
   let websiteSection = 'No website content available.';
