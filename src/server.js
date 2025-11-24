@@ -32,8 +32,8 @@ const {
   buildJobSummaryBody,
   sendJobSummaryEmail,
   sendPrecallPlanEmail,
+  sendDetailedReportEmail,
 } = require('./email');
-const nodemailer = require('nodemailer');
 const { generatePrecallPrep } = require('./workflows/precallPrepWorkflow');
 
 const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
@@ -127,78 +127,6 @@ const MAX_TRANSCRIPT_CHARS = 15000;
 const MAX_ANALYSIS_CHARS = 12000;
 
 initDb();
-
-// Local detailed-report email helper using the same SMTP env config as other emails
-let detailedReportTransporter = null;
-function getDetailedReportTransporter() {
-  if (detailedReportTransporter) return detailedReportTransporter;
-
-  const {
-    SMTP_HOST,
-    SMTP_PORT,
-    SMTP_USER,
-    SMTP_PASS,
-    SMTP_SECURE,
-    FROM_EMAIL,
-  } = process.env;
-
-  const port = SMTP_PORT ? Number(SMTP_PORT) : 587;
-  const secure =
-    typeof SMTP_SECURE === 'string'
-      ? SMTP_SECURE.toLowerCase() === 'true'
-      : port === 465;
-
-  if (!SMTP_HOST || !port) {
-    throw new Error('SMTP not configured for detailed report email');
-  }
-
-  const baseConfig = {
-    host: SMTP_HOST,
-    port,
-    secure,
-  };
-
-  if (SMTP_USER && SMTP_PASS) {
-    baseConfig.auth = {
-      user: SMTP_USER,
-      pass: SMTP_PASS,
-    };
-  }
-
-  detailedReportTransporter = nodemailer.createTransport(baseConfig);
-  return detailedReportTransporter;
-}
-
-async function sendDetailedReportEmail({ to, subject, text, html }) {
-  const { FROM_EMAIL, NOTIFY_EMAIL } = process.env;
-  const transporter = getDetailedReportTransporter();
-
-  const recipient =
-    (typeof to === 'string' && to.trim()) ||
-    (typeof NOTIFY_EMAIL === 'string' && NOTIFY_EMAIL.trim());
-
-  if (!recipient) {
-    throw new Error('No recipient configured for detailed report email');
-  }
-
-  const mailOptions = {
-    from:
-      (typeof FROM_EMAIL === 'string' && FROM_EMAIL.trim()) ||
-      (typeof SMTP_USER === 'string' && SMTP_USER.trim()) ||
-      recipient,
-    to: recipient,
-    subject:
-      (typeof subject === 'string' && subject.trim()) ||
-      'Kalyan AI – Post-call report',
-    text: (typeof text === 'string' && text.trim()) || 'Post-call report',
-  };
-
-  if (typeof html === 'string' && html.trim()) {
-    mailOptions.html = html;
-  }
-
-  await transporter.sendMail(mailOptions);
-}
 
 function generateJobId() {
   const now = Date.now().toString();

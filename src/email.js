@@ -207,19 +207,29 @@ function buildJobSummaryBody(job, analysisOverride) {
  * Returns true on success, false if sending was skipped or failed.
  */
 async function sendJobSummaryEmail(job) {
-  if (!NOTIFY_EMAIL || !FROM_EMAIL) {
-    console.warn(
-      "sendJobSummaryEmail: NOTIFY_EMAIL or FROM_EMAIL not configured; skipping email.",
-    );
-    return false;
-  }
-
   if (!transporter) {
     console.warn(
       "sendJobSummaryEmail: transporter not configured correctly; skipping email.",
     );
     return false;
   }
+
+  const recipient =
+    (typeof NOTIFY_EMAIL === "string" && NOTIFY_EMAIL.trim()) ||
+    (job && typeof job.notifyEmail === "string" && job.notifyEmail.trim()) ||
+    "";
+
+  if (!recipient) {
+    console.warn(
+      "sendJobSummaryEmail: no recipient email configured; skipping email.",
+    );
+    return false;
+  }
+
+  const fromAddress =
+    (typeof FROM_EMAIL === "string" && FROM_EMAIL.trim()) ||
+    (typeof SMTP_USER === "string" && SMTP_USER.trim()) ||
+    recipient;
 
   const hasAnalysisObject =
     job && job.analysisJson && typeof job.analysisJson === "object";
@@ -245,8 +255,8 @@ async function sendJobSummaryEmail(job) {
 
   try {
     await transporter.sendMail({
-      from: FROM_EMAIL,
-      to: NOTIFY_EMAIL,
+      from: fromAddress,
+      to: recipient,
       subject,
       text: body,
     });
