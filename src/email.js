@@ -111,27 +111,31 @@ function formatSection(title, value) {
 }
 
 /**
- * Build the plain-text discovery call summary body that we email and,
- * optionally, store as a full narrative report.
+ * Send a job summary email.
+ * Returns true on success, false if sending was skipped or failed.
  */
-function buildJobSummaryBody(job, analysisOverride) {
+async function sendJobSummaryEmail(job) {
+  if (!NOTIFY_EMAIL || !FROM_EMAIL) {
+    console.warn(
+      "sendJobSummaryEmail: NOTIFY_EMAIL or FROM_EMAIL not configured; skipping email.",
+    );
+    return false;
+  }
+
+  if (!transporter) {
+    console.warn(
+      "sendJobSummaryEmail: transporter not configured correctly; skipping email.",
+    );
+    return false;
+  }
+
   const hasAnalysisObject =
-    analysisOverride && typeof analysisOverride === "object";
+    job && job.analysisJson && typeof job.analysisJson === "object";
 
-  const hasAnalysisFromJob =
-    job &&
-    job.analysisJson &&
-    typeof job.analysisJson === "object" &&
-    !Array.isArray(job.analysisJson);
+  const analysis = hasAnalysisObject ? job.analysisJson : {};
 
-  const analysis = hasAnalysisObject
-    ? analysisOverride
-    : hasAnalysisFromJob
-      ? job.analysisJson
-      : null;
-
-  const clientNameRaw = analysis && analysis.CLIENT_NAME;
-  const clientIndustryRaw = analysis && analysis.CLIENT_INDUSTRY;
+  const clientNameRaw = analysis.CLIENT_NAME;
+  const clientIndustryRaw = analysis.CLIENT_INDUSTRY;
 
   const clientName =
     typeof clientNameRaw === "string" && clientNameRaw.trim()
@@ -143,9 +147,11 @@ function buildJobSummaryBody(job, analysisOverride) {
       ? clientIndustryRaw.trim()
       : "Unknown";
 
+  const subject = `Kalyan AI – Discovery Call Summary – ${clientName} – ${job.id}`;
+
   const lines = [];
 
-  lines.push("Kalyan AI - Discovery Call Summary");
+  lines.push("Kalyan AI – Discovery Call Summary");
   lines.push("");
   lines.push(`Client: ${clientName}`);
   lines.push(`Industry: ${clientIndustry}`);
@@ -155,7 +161,7 @@ function buildJobSummaryBody(job, analysisOverride) {
   );
   lines.push(`Created At: ${job.createdAt || "Unknown"}`);
 
-  if (!analysis) {
+  if (!hasAnalysisObject) {
     lines.push("");
     lines.push("Summary:");
     lines.push(job.resultSummary || "No summary available.");
@@ -199,64 +205,12 @@ function buildJobSummaryBody(job, analysisOverride) {
     lines.push(`Error: ${job.error}`);
   }
 
-  return lines.join("\n");
-}
-
-/**
- * Send a job summary email.
- * Returns true on success, false if sending was skipped or failed.
- */
-async function sendJobSummaryEmail(job) {
-  if (!transporter) {
-    console.warn(
-      "sendJobSummaryEmail: transporter not configured correctly; skipping email.",
-    );
-    return false;
-  }
-
-  const recipient =
-    (typeof NOTIFY_EMAIL === "string" && NOTIFY_EMAIL.trim()) ||
-    (job && typeof job.notifyEmail === "string" && job.notifyEmail.trim()) ||
-    "";
-
-  if (!recipient) {
-    console.warn(
-      "sendJobSummaryEmail: no recipient email configured; skipping email.",
-    );
-    return false;
-  }
-
-  const fromAddress =
-    (typeof FROM_EMAIL === "string" && FROM_EMAIL.trim()) ||
-    (typeof SMTP_USER === "string" && SMTP_USER.trim()) ||
-    recipient;
-
-  const hasAnalysisObject =
-    job && job.analysisJson && typeof job.analysisJson === "object";
-
-  const analysis = hasAnalysisObject ? job.analysisJson : {};
-
-  const clientNameRaw = analysis.CLIENT_NAME;
-  const clientIndustryRaw = analysis.CLIENT_INDUSTRY;
-
-  const clientName =
-    typeof clientNameRaw === "string" && clientNameRaw.trim()
-      ? clientNameRaw.trim()
-      : "Unknown";
-
-  const clientIndustry =
-    typeof clientIndustryRaw === "string" && clientIndustryRaw.trim()
-      ? clientIndustryRaw.trim()
-      : "Unknown";
-
-  const subject = `Kalyan AI - Discovery Call Summary - ${clientName} - ${job.id}`;
-
-  const body = buildJobSummaryBody(job, analysis);
+  const body = lines.join("\n");
 
   try {
     await transporter.sendMail({
-      from: fromAddress,
-      to: recipient,
+      from: FROM_EMAIL,
+      to: NOTIFY_EMAIL,
       subject,
       text: body,
     });
@@ -267,106 +221,7 @@ async function sendJobSummaryEmail(job) {
   }
 }
 
-async function sendPrecallPlanEmail(options = {}) {
-  if (!FROM_EMAIL) {
-    console.warn(
-      "sendPrecallPlanEmail: FROM_EMAIL not configured; skipping email.",
-    );
-    return false;
-  }
-
-  if (!transporter) {
-    console.warn(
-      "sendPrecallPlanEmail: transporter not configured correctly; skipping email.",
-    );
-    return false;
-  }
-
-  const recipient =
-    typeof options.to === "string" ? options.to.trim() : "";
-
-  if (!recipient) {
-    console.warn(
-      "sendPrecallPlanEmail: no recipient email provided; skipping email.",
-    );
-    return false;
-  }
-
-  const subject =
-    typeof options.subject === "string" && options.subject.trim()
-      ? options.subject.trim()
-      : "Your pre-call plan is ready";
-
-  const body =
-    typeof options.body === "string" && options.body.trim()
-      ? options.body.trim()
-      : "Your pre-call plan is ready.";
-
-  try {
-    await transporter.sendMail({
-      from: FROM_EMAIL,
-      to: recipient,
-      subject,
-      text: body,
-    });
-    return true;
-  } catch (err) {
-    console.error("sendPrecallPlanEmail: failed to send email", err);
-    return false;
-  }
-}
-
-async function sendDetailedReportEmail({ to, subject, text, html } = {}) {
-  if (!FROM_EMAIL) {
-    console.warn(
-      "sendDetailedReportEmail: FROM_EMAIL not configured; skipping email.",
-    );
-    return false;
-  }
-
-  if (!transporter) {
-    console.warn(
-      "sendDetailedReportEmail: transporter not configured correctly; skipping email.",
-    );
-    return false;
-  }
-
-  const recipient =
-    (typeof to === "string" && to.trim()) ||
-    NOTIFY_EMAIL ||
-    "future@kalyanai.io";
-
-  const safeSubject =
-    (typeof subject === "string" && subject.trim()) ||
-    "Kalyan AI - Post-call report";
-
-  const safeText =
-    (typeof text === "string" && text.trim()) ||
-    "Post-call report is ready.";
-
-  const mailOptions = {
-    from: FROM_EMAIL,
-    to: recipient,
-    subject: safeSubject,
-    text: safeText,
-  };
-
-  if (typeof html === "string" && html.trim()) {
-    mailOptions.html = html;
-  }
-
-  try {
-    await transporter.sendMail(mailOptions);
-    return true;
-  } catch (err) {
-    console.error("sendDetailedReportEmail: failed to send email", err);
-    return false;
-  }
-}
-
 module.exports = {
-  buildJobSummaryBody,
   sendJobSummaryEmail,
-  sendPrecallPlanEmail,
-  sendDetailedReportEmail,
 };
+

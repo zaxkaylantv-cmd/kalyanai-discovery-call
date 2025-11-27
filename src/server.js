@@ -464,6 +464,12 @@ app.use(pinoHttp({ logger }));
 const corsOptions = {
   origin: [
     'http://185.151.29.141:8080', // VPS frontend
+    'http://185.151.29.141', // Nginx-served frontend on port 80
+    'https://185.151.29.141', // Allow HTTPS if enabled later
+    'https://kalyanai.io',
+    'http://kalyanai.io',
+    'https://www.kalyanai.io',
+    'http://www.kalyanai.io',
     'http://localhost:5173',
     'http://localhost:3000',
     'http://localhost:8080',

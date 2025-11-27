@@ -1,0 +1,347 @@
+const fs = require('fs');
+const path = require('path');
+const cors = require('cors');
+const express = require('express');
+const multer = require('multer');
+const pinoHttp = require('pino-http');
+const logger = require('./logger');
+const { summarizeTranscript } = require('./summarizer');
+const { downloadTranscript, postToSlack } = require('./clients');
+const { appendIngestEvent } = require('./ingestLogger');
+const { openai } = require('./openaiClient');
+
+const ANALYSIS_PROMPT = `You are a senior automation architect and AI business consultant for Kalyan AI.
+
+Return a STRICT, VALID JSON object only (no Markdown, no code fences, no leading/trailing text). The first character must be {.
+
+Your output will be parsed and injected into a document template and a dashboard. Keys must MATCH EXACTLY:
+
+CLIENT_NAME, CLIENT_INDUSTRY, CLIENT_OVERVIEW, TIME_EFFICIENCY, COSTS_RESOURCES, RISK_QUALITY, REVENUE_GROWTH, CUSTOMER_ENGAGEMENT, DATA_SYSTEMS, TOP_PRIORITY, READINESS_CONSTRAINTS, COMPETITION_CAPACITY, KEY_OUTCOMES, AUTOMATIONS_LIST, REVENUE_IDEAS, METRICS, RED_FLAGS, NEXT_STEPS, KEY_QUOTES, PLAN_LIST.
+
+Rules:
+- Each value is plain text. No HTML, no Markdown.
+- Use bullet lines that start with "- " and separate bullets with \\n, EXCEPT for CLIENT_NAME, CLIENT_INDUSTRY, and TOP_PRIORITY which must be single-line sentences (no bullets).
+- Do not invent facts. If unknown, write "Unknown".
+- Quote client words exactly inside quotes; include timestamps if provided, else write "Unknown".
+- Tone: crisp, neutral, professional. One sentence per bullet.
+
+Inputs you may use (any can be missing):
+- transcribed_text (main input)
+- plus optional structured metadata in future like: client, industry, project_goal, audience, constraints, current_stack, systems_in_use, data_sources, authentication, nonfunctional_requirements.
+
+Return only the JSON object.`;
+
+const jobs = [];
+
+// ---------------- Discovery-call job processing ----------------
+
+async function processJob(jobId) {
+  const job = jobs.find((j) => j.id === jobId);
+  if (!job) {
+    return;
+  }
+
+  job.status = 'processing';
+
+  if (!openai) {
+    logger.warn({ jobId }, 'OpenAI client not configured; skipping processing');
+    job.status = 'error';
+    job.resultSummary = 'OpenAI client not configured. Set OPENAI_API_KEY.';
+    return;
+  }
+
+  if (!job.filePath) {
+    logger.error({ jobId }, 'Job missing filePath; cannot process');
+    job.status = 'error';
+    job.resultSummary = 'Internal error: missing file path for job.';
+    return;
+  }
+
+  // --- Ensure the file has a proper audio extension for Whisper ---
+  const allowedExts = [
+    '.flac',
+    '.m4a',
+    '.mp3',
+    '.mp4',
+    '.mpeg',
+    '.mpga',
+    '.oga',
+    '.ogg',
+    '.wav',
+    '.webm',
+  ];
+
+  const originalExt = path.extname(job.filename || '').toLowerCase();
+  const extToUse = allowedExts.includes(originalExt) ? originalExt : '.mp4';
+
+  const tempFilePath = job.filePath + extToUse;
+
+  try {
+    // Copy the uploaded file to a new path with an extension
+    fs.copyFileSync(job.filePath, tempFilePath);
+
+    // 1) Transcribe with Whisper
+    const transcription = await openai.audio.transcriptions.create({
+      file: fs.createReadStream(tempFilePath),
+      model: 'whisper-1',
+      response_format: 'text',
+    });
+
+    const transcriptText =
+      typeof transcription === 'string'
+        ? transcription
+        : transcription && typeof transcription.text === 'string'
+          ? transcription.text
+          : '';
+
+    if (!transcriptText) {
+      throw new Error('Empty transcript from OpenAI Whisper');
+    }
+
+    // 2) Analyse with GPT in JSON mode
+    const chatResponse = await openai.chat.completions.create({
+      model: 'gpt-4.1-mini',
+      response_format: { type: 'json_object' },
+      messages: [
+        { role: 'system', content: ANALYSIS_PROMPT },
+        {
+          role: 'user',
+          content: JSON.stringify({
+            transcribed_text: transcriptText,
+          }),
+        },
+      ],
+    });
+
+    const rawContent =
+      chatResponse &&
+      Array.isArray(chatResponse.choices) &&
+      chatResponse.choices[0] &&
+      chatResponse.choices[0].message &&
+      typeof chatResponse.choices[0].message.content === 'string'
+        ? chatResponse.choices[0].message.content.trim()
+        : '';
+
+    if (!rawContent) {
+      throw new Error('Empty analysis response from OpenAI Chat');
+    }
+
+    let parsed;
+    try {
+      parsed = JSON.parse(rawContent);
+    } catch (err) {
+      logger.error({ err, jobId, rawContent }, 'Failed to parse analysis JSON');
+      job.status = 'error';
+      job.resultSummary = 'Analysis failed: invalid JSON from model.';
+      return;
+    }
+
+    job.status = 'done';
+    job.analysisJson = rawContent;
+
+    if (parsed && typeof parsed.TOP_PRIORITY === 'string' && parsed.TOP_PRIORITY.trim()) {
+      job.resultSummary = parsed.TOP_PRIORITY.trim();
+    } else {
+      job.resultSummary = 'Analysis complete.';
+    }
+  } catch (err) {
+    logger.error({ err, jobId }, 'Error processing job');
+    job.status = 'error';
+    job.resultSummary =
+      'Analysis failed: ' + (err && err.message ? err.message : 'Unknown error');
+  } finally {
+    // Best-effort cleanup of temp file
+    try {
+      if (fs.existsSync(tempFilePath)) {
+        fs.unlinkSync(tempFilePath);
+      }
+    } catch (cleanupErr) {
+      logger.warn({ cleanupErr, jobId }, 'Failed to clean up temp audio file');
+    }
+  }
+}
+
+// ---------------- Express app + routes ----------------
+
+const app = express();
+const cors = require("cors");
+const express = require("express");
+const cors = require("cors");
+const app = express();
+
+app.use(
+  cors({
+    origin: ["http://185.151.29.141:8080", "http://localhost:5173"],
+    credentials: false,
+  })
+);
+
+// ...your other app.use(...) and routes...
+
+const upload = multer({ dest: 'uploads/' });
+
+app.use(express.json());
+app.use(pinoHttp({ logger }));
+app.use(
+  cors({
+    origin: ['http://localhost:5173', 'http://localhost:3000', 'http://localhost:8080'],
+    methods: ['GET', 'POST'],
+  }),
+);
+
+app.get('/health', (req, res) => {
+  res.status(200).json({ status: 'ok' });
+});
+
+app.post('/process-file', upload.single('file'), (req, res) => {
+  const file = req.file;
+
+  if (!file) {
+    return res.status(400).json({ success: false, error: 'No file uploaded' });
+  }
+
+  logger.info({ filename: file.originalname }, 'Received file upload');
+
+  const job = {
+    id: Date.now().toString(),
+    filename: file.originalname,
+    filePath: file.path, // original path without extension
+    status: 'processing',
+    createdAt: new Date().toISOString(),
+  };
+
+  jobs.push(job);
+  processJob(job.id);
+
+  return res.json({
+    success: true,
+    message: 'File received',
+    jobId: job.id,
+  });
+});
+
+app.get('/jobs', (req, res) => {
+  const sortedJobs = [...jobs].sort((a, b) => {
+    if (a.createdAt > b.createdAt) return -1;
+    if (a.createdAt < b.createdAt) return 1;
+    return 0;
+  });
+
+  res.json(sortedJobs);
+});
+
+app.get('/jobs/:id', (req, res) => {
+  const { id } = req.params;
+  const job = jobs.find((j) => j.id === id);
+
+  if (!job) {
+    return res.status(404).json({ error: 'Job not found' });
+  }
+
+  return res.json(job);
+});
+
+// ---------------- Existing /webhooks/teams logic (unchanged) ----------------
+
+app.post('/webhooks/teams', async (req, res) => {
+  try {
+    const { transcript_url: transcriptUrl } = req.body || {};
+    if (!transcriptUrl || typeof transcriptUrl !== 'string') {
+      return res
+        .status(400)
+        .json({ error: 'invalid_input', message: 'Expected transcript_url string' });
+    }
+
+    const retryBaseMs = Number(process.env.RETRY_BASE_MS || 50);
+
+    // Safe mode: dry run short-circuit
+    if (process.env.DRY_RUN === '1') {
+      appendIngestEvent({
+        ts: new Date().toISOString(),
+        source: 'teams',
+        transcript_url: transcriptUrl,
+        dryRun: true,
+      });
+      return res.status(200).json({ ok: true, dryRun: true });
+    }
+
+    // Gate network usage for non-mock URLs
+    const isMockTranscript =
+      typeof transcriptUrl === 'string' && transcriptUrl.startsWith('mock:');
+    if (!isMockTranscript && process.env.ALLOW_NETWORK !== '1') {
+      appendIngestEvent({
+        ts: new Date().toISOString(),
+        source: 'teams',
+        transcript_url: transcriptUrl,
+        error: 'network_disabled',
+        message: 'Set ALLOW_NETWORK=1 to enable outbound HTTP',
+      });
+      return res
+        .status(400)
+        .json({ error: 'network_disabled', message: 'Set ALLOW_NETWORK=1 to enable outbound HTTP' });
+    }
+
+    // 1) Download transcript (supports mock: scheme for tests/offline)
+    const transcript = await downloadTranscript(transcriptUrl, { baseMs: retryBaseMs });
+
+    // 2) Summarize (placeholder)
+    const summary = summarizeTranscript(transcript);
+
+    // 3) Post to Slack
+    const webhookUrl = process.env.SLACK_WEBHOOK_URL || '';
+    if (!webhookUrl) {
+      appendIngestEvent({
+        ts: new Date().toISOString(),
+        source: 'teams',
+        transcript_url: transcriptUrl,
+        summary,
+        error: 'missing_slack_webhook',
+      });
+      return res.status(400).json({ error: 'missing_slack_webhook' });
+    }
+    const isMockWebhook = webhookUrl.startsWith('mock:');
+    if (!isMockWebhook && process.env.ALLOW_NETWORK !== '1') {
+      appendIngestEvent({
+        ts: new Date().toISOString(),
+        source: 'teams',
+        transcript_url: transcriptUrl,
+        summary,
+        error: 'network_disabled',
+        message: 'Set ALLOW_NETWORK=1 to enable outbound HTTP',
+      });
+      return res
+        .status(400)
+        .json({ error: 'network_disabled', message: 'Set ALLOW_NETWORK=1 to enable outbound HTTP' });
+    }
+    try {
+      await postToSlack(webhookUrl, { text: summary }, { baseMs: retryBaseMs });
+    } catch (err) {
+      appendIngestEvent({
+        ts: new Date().toISOString(),
+        source: 'teams',
+        transcript_url: transcriptUrl,
+        summary,
+        slack: { ok: false, error: err && err.message },
+      });
+      return res.status(502).json({ error: 'slack_post_failed' });
+    }
+
+    appendIngestEvent({
+      ts: new Date().toISOString(),
+      source: 'teams',
+      transcript_url: transcriptUrl,
+      summary,
+      slack: { ok: true },
+    });
+
+    return res.status(200).json({ ok: true });
+  } catch (e) {
+    req.log.error({ err: e }, 'Unhandled error in /webhooks/teams');
+    return res.status(500).json({ error: 'internal_error' });
+  }
+});
+
+module.exports = app;
+cd ~/apps/kalyanai-backend/automation-starter
+cp src/server.js src/server.js.backup
+
