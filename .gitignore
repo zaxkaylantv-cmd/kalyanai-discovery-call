@@ -3,3 +3,7 @@ node_modules/
 coverage/
 npm-debug.log*
 logs/
+
+# Ignore runtime uploads and vault snapshots
+uploads/
+vault/
