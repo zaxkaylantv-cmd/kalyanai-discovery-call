@@ -11,6 +11,11 @@
 - `npm start` — loads `.env`, starts HTTP server on `PORT` (default 3000).
 - Health check: `GET http://localhost:3000/health` → `200 {"status":"ok"}`
 
+## Demo URLs (production VPS)
+- Frontend welcome page: `http://185.151.29.141/welcome`
+- Discovery API base: `http://185.151.29.141/discovery` (health at `/discovery/health`)
+- Update the Nginx proxy if the VPS IP or domain changes so `/discovery` forwards to this service on port 3001.
+
 ## Test
 - `npm test` — runs Jest test suite.
 
@@ -36,6 +41,11 @@
 ## Curl Examples
 - Health: `curl -s http://localhost:3001/health`
 - Dry-run webhook: `curl -s -H "Content-Type: application/json" -d '{"transcript_url":"mock:hello"}' http://localhost:3001/webhooks/teams`
+
+## Vault Snapshots
+- Archives live in `vault/` and every entry in `vault/manifest.log` records `timestamp | reference | archive`.
+- Run `scripts/save_snapshot.sh "short description"` to capture the current project (excludes `.git`, `node_modules`, and the vault itself) into `vault/<timestamp>_<reference>.tar.gz`.
+- Use the manifest to match archives with their references for quick rollbacks.
 
 ## Move to Real Slack
 1. Set `DRY_RUN=0` in `.env`

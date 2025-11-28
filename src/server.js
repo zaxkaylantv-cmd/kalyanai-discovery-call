@@ -123,6 +123,93 @@ Rules:
 - Rationale should be one concise sentence referencing the relevant transcript evidence (or lack of it).
 - Do NOT hallucinate or assume content that is not present in the transcript; be conservative and honest about uncertainty.`;
 
+// System prompt for the proposal generator.
+// - Treats the model as a senior consultant + copywriter.
+// - Requires a JSON object with { documentText, emailText } only.
+// - Explains how to structure different document types (proposal / meeting recap / engagement letter).
+const PROPOSAL_DRAFT_PROMPT = `You are a senior management consultant and copywriter for Kalyan AI.
+
+You write clear, professional client-facing documents based on:
+- a discovery call transcript, and
+- structured form inputs about the client and meeting.
+
+You must ALWAYS:
+- Start the documentText with a friendly, professional greeting that includes the client's name (for example: "Dear Alex," or "Hi Alex,").
+- Adapt the structure and emphasis based on the documentType (proposal, meeting_recap, engagement_letter).
+- Be specific to this client and this conversation. Use names, goals, systems, constraints, and details from the inputs and transcript.
+
+You must ONLY return a single JSON object with exactly these fields:
+- documentText (string)  // the main document to send to the client
+- emailText (string)     // a short follow-up email the consultant can send
+
+Document type behaviours:
+
+1) When documentType is "proposal":
+- Write a structured, client-ready proposal with clear headings and short paragraphs or bullet points.
+- Use this structure as a guide (adapt wording if needed):
+  - Greeting:
+  - 1. Current Situation & Objectives:
+  - 2. Key Challenges & Risks:
+  - 3. Recommended AI-Powered Solution:
+  - 4. Implementation Plan & Timeline:
+  - 5. Investment & ROI Rationale:
+  - 6. Next Steps & Call to Action:
+- In "Current Situation & Objectives", explicitly describe who the client is, their situation, and their goals.
+- In "Recommended AI-Powered Solution", clearly link the proposed solution to the specific pain points and constraints mentioned in the transcript.
+- In "Next Steps", give 2–4 concrete actions (for example: review the proposal, confirm scope, schedule a follow-up call).
+
+2) When documentType is "meeting_recap" or "recap":
+- Write a structured recap that reads like clear notes.
+- Use headings such as:
+  - Greeting:
+  - Summary of Meeting:
+  - Key Topics Discussed:
+  - Decisions Made:
+  - Open Questions:
+  - Action Items & Owners:
+  - Next Steps / Dates:
+- Focus on what was actually said in the transcript.
+- List action items as bullet points with who is responsible where possible.
+
+3) When documentType is "engagement_letter":
+- Write a plain English engagement letter that feels like a clear agreement (but not legalese).
+- Use headings such as:
+  - Greeting:
+  - Introduction & Purpose of Engagement:
+  - Scope of Work:
+  - Responsibilities (Client vs Consultant):
+  - Fees / Investment & Payment Terms:
+  - Timeline / Milestones:
+  - Confidentiality & Data Handling (high level):
+  - Next Steps & Acceptance:
+- Use the client's goals and pain points to justify the scope.
+- If budget or pricing are not clearly discussed in the transcript, keep fee language high-level (e.g. "We will confirm pricing in our follow-up call.").
+
+Rules for documentText (all types):
+- Write in clear, client-facing business language.
+- Immediately after the greeting line, include a short sentence thanking the client for the recent discussion and briefly restating the purpose of the conversation.
+- Use short paragraphs and bullet points where helpful.
+- Keep it specific and concrete; avoid generic fluff.
+- Make it sound like the consultant is writing directly to the client.
+
+Rules for emailText:
+- Write a short, polite follow-up email from the consultant to the client.
+- Reference the call and the attached/linked document.
+- Summarise the main value or purpose in 1–2 sentences.
+- Suggest clear next steps (for example, review, confirm scope, schedule a follow-up).
+- Keep it 2–4 short paragraphs at most.
+
+General rules:
+- Use information from both the transcript and the structured inputs.
+- Do not invent facts that clearly contradict the transcript or inputs.
+- You may reasonably infer details if the transcript is vague, but stay generic when unsure.
+- Avoid quoting or inventing specific monetary amounts (for example, do not write "£50,000" or any other exact currency figure). If budget is discussed, describe it in qualitative terms only (for example, "a significant budget" or "an agreed investment"). 
+- Avoid heavy jargon. Favour clarity, brevity, and a consultative tone.
+
+Output rules:
+- Return ONLY the JSON object with { "documentText": "...", "emailText": "..." }.
+- Do NOT include markdown fences, explanations, or any extra fields.`;
+
 const MAX_TRANSCRIPT_CHARS = 15000;
 const MAX_ANALYSIS_CHARS = 12000;
 
@@ -483,8 +570,205 @@ const corsOptions = {
 app.use(cors(corsOptions));
 app.options('*', cors(corsOptions));
 
+app.get('/', (req, res) => {
+  res.status(200).send(
+    [
+      'Kalyan AI Discovery service is running.',
+      'Use /health for status, /process-file to upload transcripts, and see README for full API.',
+    ].join(' '),
+  );
+});
+
 app.get('/health', (req, res) => {
   res.status(200).json({ status: 'ok' });
+});
+
+// ---------------- Proposal generation API (used by proposal frontend) ----------------
+
+// Note: this route is mounted at /proposals/generate in Express.
+// Nginx proxies /api/ to this app with a trailing slash, so
+// /api/proposals/generate -> /proposals/generate upstream.
+app.post('/proposals/generate', upload.single('recording'), async (req, res) => {
+  try {
+    if (!openai) {
+      return res
+        .status(500)
+        .json({ success: false, error: 'OpenAI client is not configured. Set OPENAI_API_KEY.' });
+    }
+
+    const {
+      clientName,
+      companyName,
+      clientEmail,
+      meetingTitle,
+      roleContext,
+      documentType,
+      internalNotes,
+      consultantName,
+    } = req.body || {};
+
+    if (!clientName || !documentType || !consultantName || !req.file) {
+      return res.status(400).json({
+        success: false,
+        error:
+          'Missing required fields. Provide clientName, documentType, consultantName, and upload a recording.',
+      });
+    }
+
+    const allowedExts = [
+      '.flac',
+      '.m4a',
+      '.mp3',
+      '.mp4',
+      '.mpeg',
+      '.mpga',
+      '.oga',
+      '.ogg',
+      '.wav',
+      '.webm',
+    ];
+
+    const originalExt = path
+      .extname(req.file.originalname || req.file.filename || '')
+      .toLowerCase();
+    const extToUse = allowedExts.includes(originalExt) ? originalExt : '.mp4';
+
+    const sourcePath = req.file.path;
+    const tempPath = sourcePath + extToUse;
+
+    try {
+      fs.copyFileSync(sourcePath, tempPath);
+
+      const transcription = await openai.audio.transcriptions.create({
+        file: fs.createReadStream(tempPath),
+        model: 'whisper-1',
+        response_format: 'text',
+      });
+
+      const transcriptText =
+        typeof transcription === 'string'
+          ? transcription
+          : transcription && typeof transcription.text === 'string'
+            ? transcription.text
+            : '';
+
+      if (!transcriptText) {
+        return res.status(500).json({
+          success: false,
+          error: 'Empty transcript returned from OpenAI Whisper.',
+        });
+      }
+
+	      // Normalise documentType so the model can branch its behaviour cleanly.
+	      const normalizedDocumentType =
+	        typeof documentType === 'string'
+	          ? documentType.trim().toLowerCase().replace(/\s+/g, '_')
+	          : 'proposal';
+
+	      // Build a rich, explicit user prompt that includes
+	      // both structured form inputs and the full transcript.
+      const displayClientName = clientName || 'the client';
+      const displayConsultantName = consultantName || 'your consultant';
+
+      const userMessageContent = [
+        `Use the following data to create a ${normalizedDocumentType} for this client.`,
+	        '',
+	        'Structured inputs:',
+        `Client name: ${displayClientName}`,
+	        `Company name: ${companyName || 'Unknown'}`,
+	        `Client email: ${clientEmail || 'Unknown'}`,
+        `Consultant name: ${displayConsultantName}`,
+	        `Document type: ${normalizedDocumentType}`,
+	        `Meeting title: ${meetingTitle || 'Unknown'}`,
+	        `Role / context: ${roleContext || 'Unknown'}`,
+	        `Internal notes: ${internalNotes || 'None provided'}`,
+	        '',
+	        'Transcript of the meeting:',
+	        '"""',
+	        transcriptText,
+	        '"""',
+	        '',
+	        'Instructions:',
+        `- Start documentText with a friendly greeting on the very first line, exactly like: "Dear ${displayClientName},"`,
+	        '- Use both the structured inputs and the transcript to stay specific to this client and conversation.',
+	        '- If documentType is "proposal", follow the proposal structure (situation, challenges, recommended solution, plan, investment, next steps).',
+	        '- If documentType is "meeting_recap" or "recap", focus on recap, key topics, decisions, open questions, and action items with owners.',
+        '- If documentType is "engagement_letter", write a professional engagement letter covering scope, responsibilities, high-level fees, and acceptance.',
+        `- End documentText with a short sign-off that includes the consultant name (for example: "Best regards, ${displayConsultantName}").`,
+        '- Always return a JSON object with "documentText" and "emailText" fields only.',
+      ].join('\n');
+
+	      const chatResponse = await openai.chat.completions.create({
+	        model: 'gpt-4.1-mini',
+	        response_format: { type: 'json_object' },
+	        messages: [
+	          { role: 'system', content: PROPOSAL_DRAFT_PROMPT },
+	          { role: 'user', content: userMessageContent },
+	        ],
+	      });
+
+      const rawContent =
+        chatResponse &&
+        Array.isArray(chatResponse.choices) &&
+        chatResponse.choices[0] &&
+        chatResponse.choices[0].message &&
+        typeof chatResponse.choices[0].message.content === 'string'
+          ? chatResponse.choices[0].message.content.trim()
+          : '';
+
+      if (!rawContent) {
+        return res.status(500).json({
+          success: false,
+          error: 'Empty proposal response from OpenAI.',
+        });
+      }
+
+      let parsed;
+      try {
+        parsed = JSON.parse(rawContent);
+      } catch (err) {
+        logger.error({ err, rawContent }, 'Failed to parse proposal draft JSON');
+        return res.status(500).json({
+          success: false,
+          error: 'Failed to parse proposal draft JSON.',
+        });
+      }
+
+      const documentText =
+        parsed && typeof parsed.documentText === 'string' ? parsed.documentText : '';
+      const emailText =
+        parsed && typeof parsed.emailText === 'string' ? parsed.emailText : '';
+
+      if (!documentText || !emailText) {
+        return res.status(500).json({
+          success: false,
+          error: 'Model did not return both documentText and emailText.',
+        });
+      }
+
+      return res.status(200).json({
+        success: true,
+        proposal: {
+          documentText,
+          emailText,
+        },
+      });
+    } finally {
+      try {
+        if (fs.existsSync(tempPath)) {
+          fs.unlinkSync(tempPath);
+        }
+      } catch (cleanupErr) {
+        logger.warn({ cleanupErr }, 'Failed to clean up temp proposal audio file');
+      }
+    }
+  } catch (err) {
+    logger.error({ err }, 'Unexpected error in /api/proposals/generate');
+    return res.status(500).json({
+      success: false,
+      error: 'Unexpected error while generating proposal draft.',
+    });
+  }
 });
 
 app.get('/settings', (req, res) => {
@@ -1150,6 +1434,25 @@ app.post('/postcall-coaching', async (req, res) => {
       details: safeMessage,
     });
   }
+});
+
+// Lightweight mock endpoint for sending proposal emails.
+// This does NOT send a real email; it just logs the request and returns success
+// so the frontend can update status and counts.
+app.post('/proposals/send-email', (req, res) => {
+  try {
+    logger.info(
+      { proposalEmail: req.body || {} },
+      'Received mock proposal send-email request',
+    );
+  } catch (logErr) {
+    // Ignore logging failures; this endpoint should always look "successful" to the UI.
+  }
+
+  return res.status(200).json({
+    success: true,
+    message: 'Mock email send acknowledged; no real email was sent.',
+  });
 });
 
 app.delete('/postcall-coaching/job/:jobId', async (req, res) => {
