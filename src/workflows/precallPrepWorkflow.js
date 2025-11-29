@@ -151,36 +151,11 @@ function sanitizeHedging(text) {
 function sanitizePrecallPlan(plan) {
   if (!plan || typeof plan !== 'object') return plan;
 
-  const COMPANY_GENERIC_FALLBACK =
-    'No detailed company information is available from the inputs or website.';
-  const COMPANY_SNIPPET_SENTENCE =
-    'no detailed marketing or product/service description is available from the website snippet provided';
-
   // Briefing fields
   if (plan.briefing && typeof plan.briefing === 'object') {
     ['clientOverview', 'companyOverview', 'meetingFocus', 'websiteSummary'].forEach((key) => {
       if (typeof plan.briefing[key] === 'string') {
-        let cleaned = sanitizeHedging(plan.briefing[key]);
-
-        if (key === 'companyOverview') {
-          const lower = cleaned.toLowerCase();
-
-          // If the model used the totally unhelpful generic fallback, replace it.
-          if (cleaned === COMPANY_GENERIC_FALLBACK) {
-            cleaned =
-              'Company overview was not generated in detail. Review the live website and your notes before the call to confirm what they do and who they serve.';
-          }
-
-          // If the model wrote something like:
-          // "Vanguard is a business ... but no detailed marketing or product/service description is available from the website snippet provided."
-          // then replace the whole thing with a more honest, coaching-style line.
-          if (lower.includes(COMPANY_SNIPPET_SENTENCE)) {
-            cleaned =
-              'The captured website snippet for this plan did not include a clear description of their services. Before the call, quickly scan their homepage to confirm what they do and who they serve.';
-          }
-        }
-
-        plan.briefing[key] = cleaned;
+        plan.briefing[key] = sanitizeHedging(plan.briefing[key]);
       }
     });
   }
@@ -225,10 +200,28 @@ function normalizeWebsiteUrl(raw) {
   if (!trimmed) {
     return null;
   }
-  if (/^https?:\/\//i.test(trimmed)) {
-    return trimmed;
+  const withProtocol = /^https?:\/\//i.test(trimmed)
+    ? trimmed
+    : `https://${trimmed.replace(/^https?:\/\//i, '')}`;
+
+  try {
+    const url = new URL(withProtocol);
+    const host = url.hostname;
+    const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+    const hasSubdomain = host.split('.').length > 2;
+
+    if (!isIp && !host.startsWith('www.') && !hasSubdomain) {
+      url.hostname = `www.${host}`;
+    }
+
+    // Drop query params and hash fragments for a clean base URL.
+    url.search = '';
+    url.hash = '';
+
+    return url.toString().replace(/\/$/, '');
+  } catch {
+    return withProtocol;
   }
-  return `https://${trimmed.replace(/^https?:\/\//i, '')}`;
 }
 
 
@@ -252,31 +245,93 @@ async function generatePrecallPrep(planInput = {}) {
 
   let websiteContext = null;
   const normalizedWebsiteUrl = normalizeWebsiteUrl(websiteUrl);
-  const isNetworkAllowed = process.env.ALLOW_NETWORK === '1';
+  const isNetworkAllowed =
+    (process.env.ALLOW_NETWORK || '1').toString().trim() === '1';
+
+  console.log('[Precall] Website fetch settings:', {
+    websiteUrl,
+    normalizedWebsiteUrl,
+    isNetworkAllowed,
+  });
 
   if (normalizedWebsiteUrl && isNetworkAllowed) {
-    try {
-      console.log('[Precall] Fetching website URL:', normalizedWebsiteUrl);
-
+    const fetchWithTimeout = async (targetUrl) => {
       const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 8000); // 8s timeout
-
-      const response = await fetch(normalizedWebsiteUrl, { signal: controller.signal });
-      clearTimeout(timeout);
-
-      if (response.ok) {
-        const html = await response.text();
-        const truncated = html.slice(0, 20000);
-        websiteContext = truncated;
-        console.log('[Precall] Website HTML length (truncated):', truncated.length);
-      } else {
-        console.warn('[Precall] Website fetch failed with status:', response.status);
+      try {
+        const response = await fetch(targetUrl, {
+          signal: controller.signal,
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+            Accept:
+              'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+        });
+        clearTimeout(timeout);
+        if (response.ok) {
+          const html = await response.text();
+          const truncated = html.slice(0, 20000);
+          console.log(
+            '[Precall] Website HTML length (truncated):',
+            truncated.length,
+            'for',
+            targetUrl
+          );
+          return truncated;
+        }
+        console.warn(
+          '[Precall] Website fetch failed with status:',
+          response.status,
+          'for',
+          targetUrl,
+          'content-type:',
+          response.headers.get('content-type')
+        );
+        return null;
+      } catch (error) {
+        console.warn(
+          '[Precall] Error fetching website:',
+          error && error.message ? error.message : error,
+          'for',
+          targetUrl
+        );
+        return null;
       }
-    } catch (error) {
-      console.warn(
-        '[Precall] Error fetching website:',
-        error && error.message ? error.message : error
-      );
+    };
+
+    // First attempt: the provided URL (normalized)
+    websiteContext = await fetchWithTimeout(normalizedWebsiteUrl);
+
+    // Fallback: try the site root if the provided URL was a deeper path and returned nothing usable
+    if (!websiteContext) {
+      try {
+        const origin = new URL(normalizedWebsiteUrl).origin;
+        if (origin && origin !== normalizedWebsiteUrl) {
+          console.log('[Precall] Fallback fetch using origin:', origin);
+          websiteContext = await fetchWithTimeout(origin);
+        }
+      } catch (fallbackErr) {
+        console.warn('[Precall] Failed to derive origin for fallback fetch:', fallbackErr);
+      }
+    }
+
+    // Secondary fallback: try www. host (if not already used) when no content was captured
+    if (!websiteContext) {
+      try {
+        const urlObj = new URL(normalizedWebsiteUrl);
+        const host = urlObj.hostname;
+        const hasWww = host.startsWith('www.');
+        const isIp = /^\d{1,3}(\.\d{1,3}){3}$/.test(host);
+        if (!hasWww && !isIp) {
+          urlObj.hostname = `www.${host}`;
+          const wwwUrl = urlObj.toString().replace(/\/$/, '');
+          console.log('[Precall] Secondary fallback fetch using www host:', wwwUrl);
+          websiteContext = await fetchWithTimeout(wwwUrl);
+        }
+      } catch (fallbackErr) {
+        console.warn('[Precall] Failed www fallback:', fallbackErr);
+      }
     }
   } else if (!normalizedWebsiteUrl) {
     console.log('[Precall] No valid websiteUrl provided.');
@@ -290,6 +345,14 @@ async function generatePrecallPrep(planInput = {}) {
       "Website HTML snippet (from the company's public site):",
       '------',
       websiteContext,
+      '------',
+      'End of website HTML snippet.',
+    ].join('\n');
+  } else if (normalizedWebsiteUrl) {
+    websiteSection = [
+      "Website HTML snippet (from the company's public site) could not be captured.",
+      '------',
+      'No usable website content was retrieved from the provided URL. Treat website details as unknown and rely on the structured inputs.',
       '------',
       'End of website HTML snippet.',
     ].join('\n');
@@ -322,7 +385,9 @@ async function generatePrecallPrep(planInput = {}) {
     '- Use only information that is clearly stated or strongly implied in that website text (for example product categories, service types, and target industries or segments).',
     '- It is acceptable to summarise in neutral terms such as "AI consultancy for SMEs" or "e-commerce brand selling garden products" if those phrases or very similar ideas appear in the website text.',
     '- Do NOT guess specific numbers, locations, or product names that are not present in the inputs or website text.',
-    '- When website context is available, briefing.companyOverview must be a short 1-3 sentence description of what the company does and who they serve, based primarily on the website text.',
+    '- When website context is available, briefing.companyOverview must be a short 1-3 sentence description of what the company does and who they serve, based primarily on the website text. Do NOT use generic fallback language; write the best concise description you can from the captured HTML.',
+    '- If website content is missing or minimal, explicitly say so once, then use the structured inputs to write the most helpful, goal-aligned overview you can without inventing website-specific facts.',
+    '- Always incorporate any website HTML captured into briefing, websiteSummary, and questionChecklist (mark source="website" where appropriate).',
     '- Only fall back to the string "No detailed company information is available from the inputs or website." for briefing.companyOverview if the HTML clearly contains no meaningful marketing or product/service description.',
     '- For briefing.meetingFocus, use both the structured inputs (meetingGoal, goalDescription, offerName, offerSummary, desiredOutcome) and the website text to describe what this specific call should focus on (for example aligning your offer with their stated services or target customers).',
     '- Do not return empty strings or empty arrays; when details are limited, infer reasonable, goal-aligned guidance from meetingGoal, desiredOutcome, offerName, offerSummary, and notes so every required field stays populated.',
