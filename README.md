@@ -1,54 +1,34 @@
-# Automation Starter (Node.js)
+# Discovery Call Backend
 
-## Prerequisites
-- Node.js 16+ and npm
+Express service that ingests discovery call recordings, generates prep/plan outputs, and serves data to the Discovery UI.
 
-## Setup
-1. Copy `.env.example` to `.env` and adjust values.
-2. Install dependencies: `npm install`
+## Run locally
+- Install dependencies: `npm install`
+- Start the server: `npm start` (entrypoint `src/index.js`; honours `PORT`, defaults to `3001`)
 
-## Run
-- `npm start` — loads `.env`, starts HTTP server on `PORT` (default 3000).
-- Health check: `GET http://localhost:3000/health` → `200 {"status":"ok"}`
+## Safe local behaviour
+- Use `DRY_RUN=1` to skip external side effects during local testing.
+- Set `ALLOW_NETWORK=1` only when you need outbound calls.
+- Prefer `mock:` URLs where available to avoid hitting real services.
 
-## Demo URLs (production VPS)
-- Frontend welcome page: `http://185.151.29.141/welcome`
-- Discovery API base: `http://185.151.29.141/discovery` (health at `/discovery/health`)
-- Update the Nginx proxy if the VPS IP or domain changes so `/discovery` forwards to this service on port 3001.
+## API endpoints used by the frontend
+- `GET /health`
+- `GET /jobs`
+- `GET /jobs/:id`
+- `POST /process-file`
+- `GET /settings`
+- `GET /precall-plans`
+- `GET /precall-plans/:id`
+- `POST /precall-prep`
+- `POST /postcall-coaching`
+- `POST /ai-checklist-coverage`
+- `GET /calls/:id/checklist-coverage`
 
-## Test
-- `npm test` — runs Jest test suite.
+## Deployment notes
+- Serve behind nginx (or similar) and proxy a frontend path such as `/api` to this service; avoid hardcoded IPs.
+- Ensure `PORT` is set if you need a non-default port.
 
-## Notes
-- Logging: Pino via `pino-http` middleware. Adjust `LOG_LEVEL` in `.env`.
-- Structure:
-  - `src/index.js` — bootstrap (dotenv + start server)
-  - `src/server.js` — Express app with routes/middleware
-  - `src/logger.js` — Pino logger
-- `tests/` — Jest tests
-
-## Safe Local Behavior
-- `DRY_RUN=1`: skip network and acknowledge webhook with `{ "ok": true, "dryRun": true }`; still logs to `logs/ingest.jsonl`.
-- `ALLOW_NETWORK=1`: enable outbound HTTP. Without this, real URLs are rejected with `400 { "error": "network_disabled" }`.
-- Use `mock:` URLs for offline/local testing (e.g., transcript `mock:Hello`, Slack `mock:slack`).
-
-## Visual Studio/VS Code Quickstart
-- Install Node 18+ and npm. If PowerShell blocks `npm`, either run from Command Prompt, or use provided scripts.
-- Run tests without npm: `powershell -ExecutionPolicy Bypass -File scripts/test.ps1`
-- Start server without npm: `powershell -ExecutionPolicy Bypass -File scripts/dev.ps1`
-- VS Code debugging: use the "Start Server (env from .env)" or "Jest Tests" launch configs in `.vscode/launch.json`.
-
-## Curl Examples
-- Health: `curl -s http://localhost:3001/health`
-- Dry-run webhook: `curl -s -H "Content-Type: application/json" -d '{"transcript_url":"mock:hello"}' http://localhost:3001/webhooks/teams`
-
-## Vault Snapshots
-- Archives live in `vault/` and every entry in `vault/manifest.log` records `timestamp | reference | archive`.
-- Run `scripts/save_snapshot.sh "short description"` to capture the current project (excludes `.git`, `node_modules`, and the vault itself) into `vault/<timestamp>_<reference>.tar.gz`.
-- Use the manifest to match archives with their references for quick rollbacks.
-
-## Move to Real Slack
-1. Set `DRY_RUN=0` in `.env`
-2. Set `ALLOW_NETWORK=1`
-3. Set `SLACK_WEBHOOK_URL=<your real URL>`
-4. Restart server and POST a real `transcript_url`
+## Operational guardrails
+- Do not commit secrets; keep environment values in a local `.env` and provide `.env.example` only.
+- Do not commit database changes (e.g., `data/*.sqlite`); take backups before schema or data edits.
+- Avoid risky edits to data or configs without backups.
