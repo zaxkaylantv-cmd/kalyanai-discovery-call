@@ -25,7 +25,8 @@ Express service that ingests discovery call recordings, generates prep/plan outp
 - `GET /calls/:id/checklist-coverage`
 
 ## Deployment notes
-- Serve behind nginx (or similar) and proxy a frontend path such as `/api` to this service; avoid hardcoded IPs.
+- Serve behind nginx (or similar) with the backend proxied at `/discovery/api/` to `http://127.0.0.1:3001/`; avoid hardcoded public IPs.
+- The Discovery SPA (from the frontend repo) is served at `/discovery/` and should call this backend via `/discovery/api/`.
 - Ensure `PORT` is set if you need a non-default port.
 
 ## Operational guardrails
